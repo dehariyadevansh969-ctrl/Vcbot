@@ -11,9 +11,10 @@ from datetime import datetime, timedelta
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', "8293717672:AAHcFODkqpQsOAdlJe2gueHSU0YEvH4eNXw")
-API_TOKEN = os.environ.get('API_TOKEN', "e7bb86fade6290a73ae6bb35a85f3725")
-API_BASE_URL = "https://shivam-ultra-api.onrender.com/api"
-API_KEY = "SHIVAM-786"
+
+# ===== YAHAN APNI API CONFIG DALO =====
+API_BASE_URL = "https://apple-apixdev.onrender.com/api"
+API_KEY = "DevKing77"
 
 # GROUP & CHANNEL
 GROUP_LINK = "https://t.me/+3I9rJfeh5XVkZDM1"
@@ -30,6 +31,10 @@ INFO_VIDEO = "https://drive.google.com/uc?export=download&id=1l4piMX7BMlQiwRAjee
 BRAND = "꧁💠⃟‌⃟ 𝕯єν꧂"
 CREATOR = "Dev"
 
+# ===== OWNER & ADMIN CONFIG =====
+OWNER_ID = 8066199853  # Aapka Telegram ID
+ADMIN_USERNAME = "@Crownbattlesupport"  # Admin account
+
 # ==================== DATABASE SETUP ====================
 conn = sqlite3.connect('users.db', check_same_thread=False)
 c = conn.cursor()
@@ -40,7 +45,9 @@ c.execute('''CREATE TABLE IF NOT EXISTS users
               username TEXT,
               first_used TEXT,
               verified INTEGER DEFAULT 0,
-              verified_date TEXT)''')
+              verified_date TEXT,
+              is_admin INTEGER DEFAULT 0,
+              is_owner INTEGER DEFAULT 0)''')
 
 # Commands count table
 c.execute('''CREATE TABLE IF NOT EXISTS command_usage
@@ -68,9 +75,19 @@ c.execute('''CREATE TABLE IF NOT EXISTS user_limits
 
 conn.commit()
 
+# Owner ko admin banao
+c.execute("INSERT OR REPLACE INTO users (user_id, is_owner, is_admin) VALUES (?, 1, 1)", (OWNER_ID,))
+conn.commit()
+
 # ==================== DATABASE FUNCTIONS ====================
 def get_user_limit(user_id):
     """Get user's command limit"""
+    # Check if owner/admin - unlimited
+    c.execute("SELECT is_owner, is_admin FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    if user and (user[0] == 1 or user[1] == 1):
+        return {'used': 0, 'max': 999999, 'referrals': 0, 'remaining': 999999, 'is_admin': True}
+    
     c.execute("SELECT commands_used, max_commands, referrals_count FROM user_limits WHERE user_id = ?", (user_id,))
     result = c.fetchone()
     
@@ -79,52 +96,75 @@ def get_user_limit(user_id):
             'used': result[0],
             'max': result[1],
             'referrals': result[2],
-            'remaining': result[1] - result[0]
+            'remaining': result[1] - result[0],
+            'is_admin': False
         }
     else:
         # New user
         c.execute("INSERT INTO user_limits (user_id, commands_used, max_commands, referrals_count, last_reset) VALUES (?, ?, ?, ?, ?)",
                  (user_id, 0, 3, 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
-        return {'used': 0, 'max': 3, 'referrals': 0, 'remaining': 3}
+        return {'used': 0, 'max': 3, 'referrals': 0, 'remaining': 3, 'is_admin': False}
 
 def increment_command_usage(user_id):
     """Increment command usage count"""
+    # Don't increment for admin/owner
+    c.execute("SELECT is_owner, is_admin FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    if user and (user[0] == 1 or user[1] == 1):
+        return
+    
     c.execute("UPDATE user_limits SET commands_used = commands_used + 1 WHERE user_id = ?", (user_id,))
     conn.commit()
 
 def add_referral(referrer_id, referred_id):
     """Add a referral"""
-    # Check if already referred
     c.execute("SELECT * FROM referrals WHERE referrer_id = ? AND referred_id = ?", (referrer_id, referred_id))
     if c.fetchone():
         return False
     
-    # Add referral
     c.execute("INSERT INTO referrals VALUES (?, ?, ?)",
              (referrer_id, referred_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     
-    # Update referrals count
     c.execute("UPDATE user_limits SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
     
-    # Check if reached 3 referrals
     c.execute("SELECT referrals_count FROM user_limits WHERE user_id = ?", (referrer_id,))
     count = c.fetchone()[0]
     
-    if count % 3 == 0:  # Har 3 referrals par limit badhao
+    if count % 3 == 0:
         c.execute("UPDATE user_limits SET max_commands = max_commands + 3, commands_used = 0 WHERE user_id = ?", (referrer_id,))
         conn.commit()
-        return True  # Limit increased
+        return True
     else:
         conn.commit()
-        return False  # Just referral added
+        return False
 
 def can_use_command(user_id):
     """Check if user can use command"""
     limit = get_user_limit(user_id)
     return limit['remaining'] > 0
 
-# ==================== MESSAGES WITH BRAND ====================
+def is_admin_user(user_id):
+    """Check if user is admin or owner"""
+    c.execute("SELECT is_owner, is_admin FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    return user and (user[0] == 1 or user[1] == 1)
+
+# ==================== API COMMANDS LIST ====================
+API_COMMANDS = {
+    'num': '📱 Phone Lookup',
+    'aadhar': '🆔 Aadhar Info',
+    'vehicle': '🚗 Vehicle Details',
+    'ip': '🌐 IP Geolocation',
+    'insta': '📸 Instagram Profile',
+    'pan': '💳 PAN Card',
+    'ifsc': '🏦 IFSC Code',
+    'ffuid': '🎮 Free Fire UID',
+    'mail': '📧 Email Lookup',
+    'rto': '🚦 RTO Info'
+}
+
+# ==================== MESSAGES ====================
 INTRODUCTION = f"""
 ╔══════════════════════════════╗
 ║     🌀 TATSUMAKI PROFILE 🌀   ║
@@ -135,14 +175,14 @@ INTRODUCTION = f"""
 ║   👑 Creator : {BRAND}        ║
 ║   💚 Power  : Multi-API       ║
 ║   🌪️ Type   : Info Bot        ║
-║   ⭐ Version: 2.0             ║
+║   ⭐ Version: 3.0             ║
 ║                               ║
 ║     ❤️【 ABOUT 】❤️            ║
 ║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   📱 Number Info              ║
-║   📸 Instagram Info           ║
-║   🚗 RTO Details              ║
-║   🎮 Free Fire ID Info        ║
+║   📱 10+ APIs Available       ║
+║   👤 Profile System          ║
+║   🔄 Refer & Earn            ║
+║   👑 Admin Panel             ║
 ╚══════════════════════════════╝
 """
 
@@ -155,13 +195,44 @@ WELCOME_MSG = f"""
 ╠══════════════════════════════╣
 ║     ⚡ AVAILABLE COMMANDS ⚡   ║
 ╠══════════════════════════════╣
-║   📱 /num [number]            ║
-║   📸 /insta [username]        ║
-║   🚗 /rto [vehicle_number]    ║
-║   🎮 /ff [freefire_uid]       ║
+║   /help - All Commands       ║
+║   /profile - Your Profile    ║
+║   /share - Referral Link     ║
+║   /owner - Contact Owner     ║
 ║                               ║
 ║   💡 FREE: 3 Commands         ║
 ║   🔄 Share to get more!       ║
+╚══════════════════════════════╝
+"""
+
+HELP_MSG = f"""
+╔══════════════════════════════╗
+║     🌀 AVAILABLE COMMANDS 🌀  ║
+╠══════════════════════════════╣
+║   {BRAND}                    ║
+╠══════════════════════════════╣
+║   🔹 BASIC COMMANDS:         ║
+║   ━━━━━━━━━━━━━━━━━━━━━       ║
+║   /start - Start Bot         ║
+║   /help - This Menu          ║
+║   /profile - Your Stats      ║
+║   /share - Get Referral      ║
+║   /owner - Contact Owner     ║
+╠══════════════════════════════╣
+║   🔹 API COMMANDS:           ║
+║   ━━━━━━━━━━━━━━━━━━━━━       ║
+"""
+
+for cmd, desc in API_COMMANDS.items():
+    HELP_MSG += f"║   /{cmd} [value] - {desc}\n"
+
+HELP_MSG += """
+╠══════════════════════════════╣
+║   💡 Examples:               ║
+║   /num 9876543210            ║
+║   /insta virat.kohli         ║
+║   /ip 8.8.8.8               ║
+║   /vehicle MH01AB1234        ║
 ╚══════════════════════════════╝
 """
 
@@ -191,45 +262,7 @@ def mark_user_verified(user_id):
              (user_id, 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
 
-# ==================== API FETCH WITH BRAND FILTER ====================
-def filter_brand(data):
-    """Recursively replace SHIVAM with BRAND in JSON"""
-    if isinstance(data, dict):
-        new_dict = {}
-        for key, value in data.items():
-            # Replace in keys
-            new_key = key
-            if isinstance(key, str):
-                new_key = key.replace("SHIVAM", "DEV").replace("Shivam", "Dev").replace("shivam", "dev")
-            
-            # Replace in values
-            if isinstance(value, str):
-                new_value = value.replace("SHIVAM", BRAND).replace("Shivam", "Dev").replace("shivam", "dev")
-                new_dict[new_key] = new_value
-            elif isinstance(value, (dict, list)):
-                new_dict[new_key] = filter_brand(value)
-            else:
-                new_dict[new_key] = value
-        
-        # Add brand info at top level
-        if "brand" not in new_dict:
-            new_dict["brand"] = BRAND
-        if "creator" not in new_dict:
-            new_dict["creator"] = CREATOR
-        if "powered_by" not in new_dict:
-            new_dict["powered_by"] = "Tatsumaki Bot"
-        
-        return new_dict
-    
-    elif isinstance(data, list):
-        return [filter_brand(item) for item in data]
-    
-    elif isinstance(data, str):
-        return data.replace("SHIVAM", BRAND).replace("Shivam", "Dev").replace("shivam", "dev")
-    
-    else:
-        return data
-
+# ==================== API FETCH ====================
 def fetch_data(endpoint, query):
     try:
         url = f"{API_BASE_URL}/{endpoint}?key={API_KEY}&num={query}"
@@ -238,13 +271,12 @@ def fetch_data(endpoint, query):
         response = requests.get(url, timeout=10)
         data = response.json()
         
-        # Apply brand filter
-        filtered_data = filter_brand(data)
+        # Add brand
+        if isinstance(data, dict):
+            data['brand'] = BRAND
+            data['creator'] = CREATOR
         
-        # Convert to pretty JSON
-        formatted_data = json.dumps(filtered_data, indent=2, ensure_ascii=False)
-        
-        # Return with brand header
+        formatted_data = json.dumps(data, indent=2, ensure_ascii=False)
         return f"**{BRAND}**\n\n```json\n{formatted_data}\n```"
         
     except Exception as e:
@@ -255,6 +287,20 @@ def fetch_data(endpoint, query):
             "message": str(e)
         }
         return f"**{BRAND}**\n\n```json\n{json.dumps(error_data, indent=2)}\n```"
+
+# ==================== ADMIN FUNCTIONS ====================
+def add_admin(user_id):
+    c.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def remove_admin(user_id):
+    if user_id != OWNER_ID:  # Owner ko nahi hata sakte
+        c.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+def set_user_limit(user_id, new_limit):
+    c.execute("UPDATE user_limits SET max_commands = ?, commands_used = 0 WHERE user_id = ?", (new_limit, user_id))
+    conn.commit()
 
 # ==================== START COMMAND ====================
 @bot.message_handler(commands=['start'])
@@ -267,7 +313,7 @@ def send_welcome(message):
     if len(args) > 1 and args[1].startswith('ref_'):
         try:
             referrer_id = int(args[1].replace('ref_', ''))
-            if referrer_id != user_id:  # Self referral not allowed
+            if referrer_id != user_id:
                 add_referral(referrer_id, user_id)
                 try:
                     bot.send_message(referrer_id, f"🎉 **New Referral!**\n\nSomeone joined using your link!\n{BRAND}", parse_mode="Markdown")
@@ -278,7 +324,6 @@ def send_welcome(message):
     
     # Check if already verified
     if is_user_verified(user_id):
-        # Already verified, direct welcome
         bot.send_video(
             chat_id,
             WELCOME_VIDEO,
@@ -321,16 +366,10 @@ def verify_callback(call):
     chat_id = call.message.chat.id
     
     if check_membership(user_id):
-        # Save to database
         mark_user_verified(user_id)
-        
-        # Initialize user limits
         get_user_limit(user_id)
-        
-        # Delete verify message
         bot.delete_message(chat_id, call.message.message_id)
         
-        # Send WELCOME VIDEO + WELCOME MSG TOGETHER
         bot.send_video(
             chat_id, 
             WELCOME_VIDEO,
@@ -347,13 +386,88 @@ def verify_callback(call):
             show_alert=True
         )
 
+# ==================== HELP COMMAND ====================
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    bot.send_message(message.chat.id, HELP_MSG, parse_mode="Markdown")
+
+# ==================== OWNER COMMAND ====================
+@bot.message_handler(commands=['owner'])
+def owner_command(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    
+    markup = InlineKeyboardMarkup()
+    btn = InlineKeyboardButton("📩 Message Owner", url=f"tg://user?id={OWNER_ID}")
+    markup.add(btn)
+    
+    msg = f"""
+╔══════════════════════════════╗
+║     👑 BOT OWNER 👑          ║
+╠══════════════════════════════╣
+║   {BRAND}                    ║
+╠══════════════════════════════╣
+║   Owner ID: {OWNER_ID}       ║
+║   Admin: {ADMIN_USERNAME}    ║
+╠══════════════════════════════╣
+║   Click below to contact     ║
+║   owner directly!            ║
+╚══════════════════════════════╝
+"""
+    bot.send_message(chat_id, msg, parse_mode="Markdown", reply_markup=markup)
+
+# ==================== PROFILE COMMAND ====================
+@bot.message_handler(commands=['profile'])
+def profile_command(message):
+    user_id = message.from_user.id
+    first_name = message.from_user.first_name
+    username = message.from_user.username or "N/A"
+    
+    limit = get_user_limit(user_id)
+    is_admin = is_admin_user(user_id)
+    
+    # Get referral count
+    c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
+    referral_count = c.fetchone()[0]
+    
+    # Get total commands used
+    c.execute("SELECT SUM(used_count) FROM command_usage WHERE user_id = ?", (user_id,))
+    total_cmds = c.fetchone()[0] or 0
+    
+    profile_msg = f"""
+╔══════════════════════════════╗
+║     🌀 USER PROFILE 🌀        ║
+╠══════════════════════════════╣
+║   {BRAND}                    ║
+╠══════════════════════════════╣
+║   👤 Name: {first_name}      ║
+║   🆔 ID: {user_id}           ║
+║   📛 Username: @{username}   ║
+╠══════════════════════════════╣
+║   📊 STATISTICS:             ║
+║   ━━━━━━━━━━━━━━━━━━━━━       ║
+║   👑 Admin: {'✅' if is_admin else '❌'}          ║
+║   📱 Commands: {total_cmds}  ║
+║   👥 Referrals: {referral_count}    ║
+╠══════════════════════════════╣
+║   ⚡ LIMIT STATUS:            ║
+║   ━━━━━━━━━━━━━━━━━━━━━       ║
+║   ✅ Used: {limit['used']}/{limit['max']}        ║
+║   💡 Remaining: {limit['remaining']}             ║
+╠══════════════════════════════╣
+║   🔗 Referral Link:          ║
+║   /share to get your link    ║
+╚══════════════════════════════╝
+"""
+    
+    bot.send_message(message.chat.id, profile_msg, parse_mode="Markdown")
+
 # ==================== SHARE COMMAND ====================
 @bot.message_handler(commands=['share'])
 def share_command(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Generate referral link
     bot_username = bot.get_me().username
     referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     
@@ -367,21 +481,17 @@ def share_command(message):
 ╠══════════════════════════════╣
 ║   📊 Your Stats:             ║
 ║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   ✅ Commands Used: {limit['used']}/{limit['max']}  ║
-║   👥 Referrals: {limit['referrals']}               ║
-║   💡 Remaining: {limit['remaining']}                ║
+║   ✅ Used: {limit['used']}/{limit['max']}         ║
+║   👥 Referrals: {limit['referrals']}              ║
+║   💡 Remaining: {limit['remaining']}               ║
 ╠══════════════════════════════╣
-║   🔥 How it works:            ║
-║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   • 3 friends refer =         ║
-║   • +3 extra commands!        ║
-║   • Unlimited times!          ║
+║   🔥 How it works:           ║
+║   • 3 friends refer =        ║
+║   • +3 extra commands!       ║
+║   • Unlimited times!         ║
 ╠══════════════════════════════╣
-║   🔗 Your Referral Link:      ║
+║   🔗 Your Referral Link:     ║
 ║   `{referral_link}`          ║
-╠══════════════════════════════╣
-║   📤 Share this link to       ║
-║   your friends & get more!    ║
 ╚══════════════════════════════╝
 """
     
@@ -390,30 +500,52 @@ def share_command(message):
     
     bot.send_message(chat_id, share_msg, parse_mode="Markdown", reply_markup=markup)
 
-# ==================== MY LIMIT COMMAND ====================
-@bot.message_handler(commands=['mylimit'])
-def mylimit_command(message):
+# ==================== ADMIN COMMANDS ====================
+@bot.message_handler(commands=['addadmin'])
+def add_admin_command(message):
     user_id = message.from_user.id
-    limit = get_user_limit(user_id)
     
-    msg = f"""
-╔══════════════════════════════╗
-║     📊 YOUR LIMIT STATUS     ║
-╠══════════════════════════════╣
-║   {BRAND}                    ║
-╠══════════════════════════════╣
-║   ✅ Used: {limit['used']}/{limit['max']}           ║
-║   👥 Referrals: {limit['referrals']}               ║
-║   💡 Remaining: {limit['remaining']}                ║
-╠══════════════════════════════╣
-║   🔄 Share to get more!       ║
-║   /share - Get your link      ║
-╚══════════════════════════════╝
-"""
-    bot.reply_to(message, msg, parse_mode="Markdown")
+    # Only owner can add admin
+    if user_id != OWNER_ID:
+        bot.reply_to(message, "❌ Only owner can use this command!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        bot.reply_to(message, "Usage: /addadmin [user_id]")
+        return
+    
+    try:
+        new_admin_id = int(args[1])
+        add_admin(new_admin_id)
+        bot.reply_to(message, f"✅ User {new_admin_id} is now admin!")
+    except:
+        bot.reply_to(message, "❌ Invalid user ID!")
+
+@bot.message_handler(commands=['setlimit'])
+def set_limit_command(message):
+    user_id = message.from_user.id
+    
+    # Only admin/owner can set limits
+    if not is_admin_user(user_id):
+        bot.reply_to(message, "❌ Admin only command!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        bot.reply_to(message, "Usage: /setlimit [user_id] [new_limit]")
+        return
+    
+    try:
+        target_id = int(args[1])
+        new_limit = int(args[2])
+        set_user_limit(target_id, new_limit)
+        bot.reply_to(message, f"✅ User {target_id} limit set to {new_limit}!")
+    except:
+        bot.reply_to(message, "❌ Invalid input!")
 
 # ==================== COMMAND HANDLER ====================
-@bot.message_handler(commands=['num', 'insta', 'rto', 'ff'])
+@bot.message_handler(commands=list(API_COMMANDS.keys()))
 def handle_commands(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -436,7 +568,7 @@ def handle_commands(message):
         else:
             mark_user_verified(user_id)
     
-    # Check command limit
+    # Check command limit (skip for admin)
     if not can_use_command(user_id):
         limit = get_user_limit(user_id)
         bot.reply_to(
@@ -459,30 +591,20 @@ def handle_commands(message):
         )
         return
     
-    # Show typing indicator
     bot.send_chat_action(chat_id, 'typing')
     
-    # Map commands
-    endpoint_map = {
-        'num': 'numinfo',
-        'insta': 'insta',
-        'rto': 'rto',
-        'ff': 'ffuid'
-    }
-    
     # Fetch data
-    result = fetch_data(endpoint_map[cmd], args)
+    result = fetch_data(cmd, args)
     
-    # Increment command usage
-    increment_command_usage(user_id)
+    # Increment usage (skip for admin)
+    if not is_admin_user(user_id):
+        increment_command_usage(user_id)
     
     # Get updated limit
     new_limit = get_user_limit(user_id)
+    limit_info = "" if is_admin_user(user_id) else f"\n\n📊 **Remaining:** {new_limit['remaining']}/{new_limit['max']}"
     
-    # Add limit info to result
-    limit_info = f"\n\n📊 **Remaining:** {new_limit['remaining']}/{new_limit['max']}"
-    
-    # Send INFO VIDEO + RESULT TOGETHER
+    # Send INFO VIDEO + RESULT
     try:
         bot.send_video(
             chat_id,
@@ -491,7 +613,7 @@ def handle_commands(message):
             parse_mode="Markdown",
             supports_streaming=True
         )
-    except Exception as e:
+    except:
         bot.send_message(chat_id, result + limit_info, parse_mode="Markdown")
 
 # ==================== ERROR HANDLER ====================
@@ -499,11 +621,11 @@ def handle_commands(message):
 def handle_all(message):
     bot.reply_to(
         message,
-        f"❌ **Invalid Command!**\n\nUse /start to see available commands.\n\n{BRAND}",
+        f"❌ **Invalid Command!**\n\nUse /help to see available commands.\n\n{BRAND}",
         parse_mode="Markdown"
     )
 
-# ==================== FLASK APP FOR KEEP ALIVE ====================
+# ==================== FLASK APP ====================
 app = Flask(__name__)
 
 @app.route('/')
@@ -523,14 +645,15 @@ def run_flask():
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
 
-# ==================== START BOT FUNCTION ====================
+# ==================== START BOT ====================
 def run_bot():
     print("🚀 Tatsumaki Bot is starting...")
     print(f"👑 Created by {BRAND}")
+    print(f"👑 Owner ID: {OWNER_ID}")
+    print(f"👑 Admin: {ADMIN_USERNAME}")
     print("📊 Status: Online")
     print("✅ Database connected")
-    print("✅ Limit System: 3 commands free")
-    print("✅ Referral System: 3 shares = +3 commands")
+    print("✅ 10+ APIs Active")
     print("=" * 30)
     
     while True:
@@ -543,10 +666,7 @@ def run_bot():
 
 # ==================== MAIN ====================
 if __name__ == "__main__":
-    # Flask server alag thread mein chalao
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
-    
-    # Bot chalao
     run_bot()
