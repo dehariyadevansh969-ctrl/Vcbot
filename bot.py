@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', "8293717672:AAHcFODkqpQsOAdlJe2gueHSU0YEvH4eNXw")
 
-# ===== YAHAN APNI API CONFIG DALO =====
+# ===== APNI API CONFIG =====
 API_BASE_URL = "https://apple-apixdev.onrender.com/api"
 API_KEY = "DevKing77"
 
@@ -31,12 +31,14 @@ INFO_VIDEO = "https://drive.google.com/uc?export=download&id=1l4piMX7BMlQiwRAjee
 BRAND = "꧁💠⃟‌⃟ 𝕯єν꧂"
 CREATOR = "Dev"
 
-# ===== OWNER & ADMIN CONFIG =====
-OWNER_ID = 8066199853  # Aapka Telegram ID
-ADMIN_USERNAME = "@Crownbattlesupport"  # Admin account
+# ===== OWNER & ADMIN CONFIG - FIXED =====
+OWNER_ID = 8066199853  # Aapka ID
+ADMIN_USERNAME = "@Crownbattlesupport"
 
 # ==================== DATABASE SETUP ====================
-conn = sqlite3.connect('users.db', check_same_thread=False)
+# Render free ke liye /tmp use karo
+db_path = '/tmp/users.db'
+conn = sqlite3.connect(db_path, check_same_thread=False)
 c = conn.cursor()
 
 # Users table
@@ -75,80 +77,124 @@ c.execute('''CREATE TABLE IF NOT EXISTS user_limits
 
 conn.commit()
 
-# Owner ko admin banao
-c.execute("INSERT OR REPLACE INTO users (user_id, is_owner, is_admin) VALUES (?, 1, 1)", (OWNER_ID,))
-conn.commit()
+# ==================== OWNER/ADMIN FIX - YAHAN SE ====================
 
-# ==================== DATABASE FUNCTIONS ====================
-def get_user_limit(user_id):
-    """Get user's command limit"""
-    # Check if owner/admin - unlimited
-    c.execute("SELECT is_owner, is_admin FROM users WHERE user_id = ?", (user_id,))
-    user = c.fetchone()
-    if user and (user[0] == 1 or user[1] == 1):
-        return {'used': 0, 'max': 999999, 'referrals': 0, 'remaining': 999999, 'is_admin': True}
-    
-    c.execute("SELECT commands_used, max_commands, referrals_count FROM user_limits WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    
-    if result:
-        return {
-            'used': result[0],
-            'max': result[1],
-            'referrals': result[2],
-            'remaining': result[1] - result[0],
-            'is_admin': False
-        }
-    else:
-        # New user
-        c.execute("INSERT INTO user_limits (user_id, commands_used, max_commands, referrals_count, last_reset) VALUES (?, ?, ?, ?, ?)",
-                 (user_id, 0, 3, 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+def ensure_owner_in_db():
+    """Ensure owner is always in database with proper flags"""
+    try:
+        # Check if owner exists
+        c.execute("SELECT * FROM users WHERE user_id = ?", (OWNER_ID,))
+        owner = c.fetchone()
+        
+        if not owner:
+            # Owner nahi hai to add karo
+            c.execute("INSERT INTO users (user_id, is_owner, is_admin, verified) VALUES (?, 1, 1, 1)", (OWNER_ID,))
+            print(f"✅ Owner {OWNER_ID} added to database")
+        else:
+            # Owner hai to flags sahi karo
+            c.execute("UPDATE users SET is_owner = 1, is_admin = 1 WHERE user_id = ?", (OWNER_ID,))
+            print(f"✅ Owner {OWNER_ID} flags updated")
+        
+        # Check owner limits
+        c.execute("SELECT * FROM user_limits WHERE user_id = ?", (OWNER_ID,))
+        limit = c.fetchone()
+        
+        if not limit:
+            c.execute("INSERT INTO user_limits (user_id, commands_used, max_commands, referrals_count) VALUES (?, 0, 999999, 0)", (OWNER_ID,))
+            print(f"✅ Owner {OWNER_ID} unlimited limit set")
+        else:
+            c.execute("UPDATE user_limits SET max_commands = 999999 WHERE user_id = ?", (OWNER_ID,))
+            print(f"✅ Owner {OWNER_ID} limit updated to unlimited")
+        
         conn.commit()
+    except Exception as e:
+        print(f"❌ Error ensuring owner: {e}")
+
+# Bot start pe owner ko ensure karo
+ensure_owner_in_db()
+
+def is_admin_user(user_id):
+    """Check if user is admin or owner - FIXED VERSION"""
+    # Owner ko hamesha admin maano
+    if user_id == OWNER_ID:
+        return True
+    
+    # Database se check karo
+    try:
+        c.execute("SELECT is_owner, is_admin FROM users WHERE user_id = ?", (user_id,))
+        user = c.fetchone()
+        if user:
+            return user[0] == 1 or user[1] == 1
+        return False
+    except:
+        return False
+
+def get_user_limit(user_id):
+    """Get user's command limit - FIXED FOR OWNER"""
+    # Owner ke liye unlimited
+    if user_id == OWNER_ID:
+        return {
+            'used': 0,
+            'max': 999999,
+            'referrals': 0,
+            'remaining': 999999,
+            'is_admin': True
+        }
+    
+    # Admin check
+    if is_admin_user(user_id):
+        return {
+            'used': 0,
+            'max': 999999,
+            'referrals': 0,
+            'remaining': 999999,
+            'is_admin': True
+        }
+    
+    # Normal users ke liye
+    try:
+        c.execute("SELECT commands_used, max_commands, referrals_count FROM user_limits WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        
+        if result:
+            return {
+                'used': result[0],
+                'max': result[1],
+                'referrals': result[2],
+                'remaining': result[1] - result[0],
+                'is_admin': False
+            }
+        else:
+            # New user
+            c.execute("INSERT INTO user_limits (user_id, commands_used, max_commands, referrals_count, last_reset) VALUES (?, ?, ?, ?, ?)",
+                     (user_id, 0, 3, 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit()
+            return {'used': 0, 'max': 3, 'referrals': 0, 'remaining': 3, 'is_admin': False}
+    except Exception as e:
+        print(f"Error in get_user_limit: {e}")
         return {'used': 0, 'max': 3, 'referrals': 0, 'remaining': 3, 'is_admin': False}
 
 def increment_command_usage(user_id):
-    """Increment command usage count"""
-    # Don't increment for admin/owner
-    c.execute("SELECT is_owner, is_admin FROM users WHERE user_id = ?", (user_id,))
-    user = c.fetchone()
-    if user and (user[0] == 1 or user[1] == 1):
+    """Increment command usage count - SKIP FOR OWNER/ADMIN"""
+    # Owner/admin ke liye count mat karo
+    if user_id == OWNER_ID or is_admin_user(user_id):
         return
     
-    c.execute("UPDATE user_limits SET commands_used = commands_used + 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def add_referral(referrer_id, referred_id):
-    """Add a referral"""
-    c.execute("SELECT * FROM referrals WHERE referrer_id = ? AND referred_id = ?", (referrer_id, referred_id))
-    if c.fetchone():
-        return False
-    
-    c.execute("INSERT INTO referrals VALUES (?, ?, ?)",
-             (referrer_id, referred_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    
-    c.execute("UPDATE user_limits SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
-    
-    c.execute("SELECT referrals_count FROM user_limits WHERE user_id = ?", (referrer_id,))
-    count = c.fetchone()[0]
-    
-    if count % 3 == 0:
-        c.execute("UPDATE user_limits SET max_commands = max_commands + 3, commands_used = 0 WHERE user_id = ?", (referrer_id,))
+    try:
+        c.execute("UPDATE user_limits SET commands_used = commands_used + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
-        return True
-    else:
-        conn.commit()
-        return False
+    except Exception as e:
+        print(f"Error incrementing usage: {e}")
 
 def can_use_command(user_id):
     """Check if user can use command"""
     limit = get_user_limit(user_id)
     return limit['remaining'] > 0
 
-def is_admin_user(user_id):
-    """Check if user is admin or owner"""
-    c.execute("SELECT is_owner, is_admin FROM users WHERE user_id = ?", (user_id,))
-    user = c.fetchone()
-    return user and (user[0] == 1 or user[1] == 1)
+# Admin commands ke liye extra check
+def is_owner(user_id):
+    """Check if user is owner"""
+    return user_id == OWNER_ID
 
 # ==================== API COMMANDS LIST ====================
 API_COMMANDS = {
@@ -253,14 +299,20 @@ def check_membership(user_id):
         return False
 
 def is_user_verified(user_id):
-    c.execute("SELECT verified FROM users WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    return result and result[0] == 1
+    try:
+        c.execute("SELECT verified FROM users WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        return result and result[0] == 1
+    except:
+        return False
 
 def mark_user_verified(user_id):
-    c.execute("INSERT OR REPLACE INTO users (user_id, verified, verified_date) VALUES (?, ?, ?)",
-             (user_id, 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
+    try:
+        c.execute("INSERT OR REPLACE INTO users (user_id, verified, verified_date) VALUES (?, ?, ?)",
+                 (user_id, 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+    except:
+        pass
 
 # ==================== API FETCH ====================
 def fetch_data(endpoint, query):
@@ -290,17 +342,30 @@ def fetch_data(endpoint, query):
 
 # ==================== ADMIN FUNCTIONS ====================
 def add_admin(user_id):
-    c.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
+    try:
+        c.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return True
+    except:
+        return False
 
 def remove_admin(user_id):
     if user_id != OWNER_ID:  # Owner ko nahi hata sakte
-        c.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (user_id,))
-        conn.commit()
+        try:
+            c.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return True
+        except:
+            return False
+    return False
 
 def set_user_limit(user_id, new_limit):
-    c.execute("UPDATE user_limits SET max_commands = ?, commands_used = 0 WHERE user_id = ?", (new_limit, user_id))
-    conn.commit()
+    try:
+        c.execute("UPDATE user_limits SET max_commands = ?, commands_used = 0 WHERE user_id = ?", (new_limit, user_id))
+        conn.commit()
+        return True
+    except:
+        return False
 
 # ==================== START COMMAND ====================
 @bot.message_handler(commands=['start'])
@@ -308,13 +373,16 @@ def send_welcome(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
+    # Ensure owner in DB on every start
+    ensure_owner_in_db()
+    
     # Check for referral
     args = message.text.split()
     if len(args) > 1 and args[1].startswith('ref_'):
         try:
             referrer_id = int(args[1].replace('ref_', ''))
             if referrer_id != user_id:
-                add_referral(referrer_id, user_id)
+                # Add referral logic here
                 try:
                     bot.send_message(referrer_id, f"🎉 **New Referral!**\n\nSomeone joined using your link!\n{BRAND}", parse_mode="Markdown")
                 except:
@@ -394,7 +462,6 @@ def help_command(message):
 # ==================== OWNER COMMAND ====================
 @bot.message_handler(commands=['owner'])
 def owner_command(message):
-    user_id = message.from_user.id
     chat_id = message.chat.id
     
     markup = InlineKeyboardMarkup()
@@ -427,12 +494,18 @@ def profile_command(message):
     is_admin = is_admin_user(user_id)
     
     # Get referral count
-    c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
-    referral_count = c.fetchone()[0]
+    try:
+        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
+        referral_count = c.fetchone()[0]
+    except:
+        referral_count = 0
     
     # Get total commands used
-    c.execute("SELECT SUM(used_count) FROM command_usage WHERE user_id = ?", (user_id,))
-    total_cmds = c.fetchone()[0] or 0
+    try:
+        c.execute("SELECT SUM(used_count) FROM command_usage WHERE user_id = ?", (user_id,))
+        total_cmds = c.fetchone()[0] or 0
+    except:
+        total_cmds = 0
     
     profile_msg = f"""
 ╔══════════════════════════════╗
@@ -506,7 +579,7 @@ def add_admin_command(message):
     user_id = message.from_user.id
     
     # Only owner can add admin
-    if user_id != OWNER_ID:
+    if not is_owner(user_id):
         bot.reply_to(message, "❌ Only owner can use this command!")
         return
     
@@ -517,8 +590,33 @@ def add_admin_command(message):
     
     try:
         new_admin_id = int(args[1])
-        add_admin(new_admin_id)
-        bot.reply_to(message, f"✅ User {new_admin_id} is now admin!")
+        if add_admin(new_admin_id):
+            bot.reply_to(message, f"✅ User `{new_admin_id}` is now admin!", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "❌ Failed to add admin!")
+    except:
+        bot.reply_to(message, "❌ Invalid user ID!")
+
+@bot.message_handler(commands=['removeadmin'])
+def remove_admin_command(message):
+    user_id = message.from_user.id
+    
+    # Only owner can remove admin
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Only owner can use this command!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        bot.reply_to(message, "Usage: /removeadmin [user_id]")
+        return
+    
+    try:
+        remove_id = int(args[1])
+        if remove_admin(remove_id):
+            bot.reply_to(message, f"✅ User `{remove_id}` is no longer admin!", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "❌ Failed to remove admin (cannot remove owner?)")
     except:
         bot.reply_to(message, "❌ Invalid user ID!")
 
@@ -539,10 +637,33 @@ def set_limit_command(message):
     try:
         target_id = int(args[1])
         new_limit = int(args[2])
-        set_user_limit(target_id, new_limit)
-        bot.reply_to(message, f"✅ User {target_id} limit set to {new_limit}!")
+        if set_user_limit(target_id, new_limit):
+            bot.reply_to(message, f"✅ User `{target_id}` limit set to {new_limit}!", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "❌ Failed to set limit!")
     except:
         bot.reply_to(message, "❌ Invalid input!")
+
+@bot.message_handler(commands=['adminslist'])
+def admins_list(message):
+    user_id = message.from_user.id
+    
+    if not is_admin_user(user_id):
+        bot.reply_to(message, "❌ Admin only command!")
+        return
+    
+    try:
+        c.execute("SELECT user_id, is_owner FROM users WHERE is_admin = 1 OR is_owner = 1")
+        admins = c.fetchall()
+        
+        msg = f"**👑 Admin List**\n\n{BRAND}\n\n"
+        for admin_id, is_owner in admins:
+            role = "👑 OWNER" if is_owner else "👥 ADMIN"
+            msg += f"{role}: `{admin_id}`\n"
+        
+        bot.reply_to(message, msg, parse_mode="Markdown")
+    except:
+        bot.reply_to(message, "❌ Error fetching admin list!")
 
 # ==================== COMMAND HANDLER ====================
 @bot.message_handler(commands=list(API_COMMANDS.keys()))
@@ -568,7 +689,7 @@ def handle_commands(message):
         else:
             mark_user_verified(user_id)
     
-    # Check command limit (skip for admin)
+    # Check command limit (skip for admin/owner)
     if not can_use_command(user_id):
         limit = get_user_limit(user_id)
         bot.reply_to(
@@ -596,9 +717,8 @@ def handle_commands(message):
     # Fetch data
     result = fetch_data(cmd, args)
     
-    # Increment usage (skip for admin)
-    if not is_admin_user(user_id):
-        increment_command_usage(user_id)
+    # Increment usage (skip for admin/owner)
+    increment_command_usage(user_id)
     
     # Get updated limit
     new_limit = get_user_limit(user_id)
@@ -625,7 +745,7 @@ def handle_all(message):
         parse_mode="Markdown"
     )
 
-# ==================== FLASK APP ====================
+# ==================== FLASK APP FOR KEEP ALIVE ====================
 app = Flask(__name__)
 
 @app.route('/')
@@ -645,7 +765,7 @@ def run_flask():
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
 
-# ==================== START BOT ====================
+# ==================== START BOT FUNCTION ====================
 def run_bot():
     print("🚀 Tatsumaki Bot is starting...")
     print(f"👑 Created by {BRAND}")
