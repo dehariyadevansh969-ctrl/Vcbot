@@ -8,7 +8,7 @@ import threading
 from flask import Flask, jsonify
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', "8756118508:AAGA06F7DfF9A0T_bYQ1ymoGfNRe_UfGgNY")
@@ -38,12 +38,12 @@ OWNER_ID = 8066199853
 FREE_CREDITS = 2
 REFERRAL_BONUS = 2
 REFERRALS_NEEDED = 5
-API_TIMEOUT = 2  # 2 seconds timeout
+API_TIMEOUT = 3  # 3 seconds exact timeout
 
 # ==================== ULTRA FAST OPTIMIZATIONS ====================
-executor = ThreadPoolExecutor(max_workers=20)  # More threads for speed
+executor = ThreadPoolExecutor(max_workers=20)
 api_cache = {}
-CACHE_TIME = 10  # Short cache for fresh data
+CACHE_TIME = 5  # Short cache
 db_cache = {}
 DB_CACHE_TIME = 30
 
@@ -135,7 +135,6 @@ def is_user_banned(user_id):
 def get_setting(setting_name):
     global bot_active_cache, maintenance_cache, join_check_cache, credit_system_cache, last_settings_update
     
-    # Update cache every 30 seconds
     if time.time() - last_settings_update > 30:
         c.execute("SELECT setting_value FROM bot_settings WHERE setting_name = 'bot_active'")
         bot_active_cache = c.fetchone()[0]
@@ -162,7 +161,6 @@ def update_setting(setting_name, value, changed_by):
     c.execute("UPDATE bot_settings SET setting_value = ?, changed_by = ?, changed_date = ? WHERE setting_name = ?",
               (value, changed_by, datetime.now(), setting_name))
     conn.commit()
-    # Update cache immediately
     if setting_name == 'bot_active':
         bot_active_cache = value
     elif setting_name == 'maintenance':
@@ -214,7 +212,7 @@ def use_credit(user_id):
     if credits['left'] > 0:
         c.execute("UPDATE users SET credits_used = credits_used + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
-        db_cache.pop(f"credits_{user_id}", None)  # Clear cache
+        db_cache.pop(f"credits_{user_id}", None)
         return True
     return False
 
@@ -227,7 +225,7 @@ def add_referral(referrer_id, referred_id):
     c.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
     c.execute("SELECT referrals_count FROM users WHERE user_id = ?", (referrer_id,))
     count = c.fetchone()[0]
-    db_cache.pop(f"credits_{referrer_id}", None)  # Clear cache
+    db_cache.pop(f"credits_{referrer_id}", None)
     if count % REFERRALS_NEEDED == 0:
         c.execute("UPDATE users SET total_credits = total_credits + ? WHERE user_id = ?", (REFERRAL_BONUS, referrer_id))
         conn.commit()
@@ -316,31 +314,14 @@ bot = telebot.TeleBot(BOT_TOKEN)
 user_verified_state = {}
 user_last_messages = {}
 
-def cleanup_previous_messages(chat_id, user_id, keep_message_ids=None):
-    """Delete previous messages except the ones to keep"""
-    if user_id in user_last_messages:
-        for msg_id in user_last_messages[user_id]:
-            if keep_message_ids and msg_id in keep_message_ids:
-                continue
-            try:
-                bot.delete_message(chat_id, msg_id)
-            except:
-                pass
-    user_last_messages[user_id] = keep_message_ids if keep_message_ids else []
-
 def track_message(user_id, message_id):
-    if user_id not in user_last_messages:
-        user_last_messages[user_id] = []
-    user_last_messages[user_id].append(message_id)
-    if len(user_last_messages[user_id]) > 10:
-        user_last_messages[user_id] = user_last_messages[user_id][-10:]
+    pass  # No tracking needed
 
-# ==================== ULTRA FAST CHECK MEMBERSHIP ====================
+# ==================== CHECK MEMBERSHIP ====================
 def check_membership(user_id):
     if join_check_cache == 'false':
         return True
     try:
-        # Ultra fast parallel checks
         def check_group():
             try:
                 return bot.get_chat_member(GROUP_ID, user_id).status in ['member', 'administrator', 'creator']
@@ -373,23 +354,32 @@ def mark_user_verified(user_id):
     conn.commit()
     user_verified_state[user_id] = True
 
-# ==================== ULTRA FAST API FUNCTION - NO FILTERING ====================
+# ==================== API FUNCTION - 3 SECOND TIMEOUT + RAW DATA ====================
 def fetch_data(endpoint, query):
     try:
-        # Direct API call - no caching for speed
         url = f"{API_BASE_URL}/{endpoint}?key={API_KEY}&num={query}"
+        print(f"Fetching: {url}")
+        
+        # Exactly 3 second timeout
         response = requests.get(url, timeout=API_TIMEOUT)
         
         if response.status_code != 200:
-            return f"**{BRAND}**\n\n❌ **Error {response.status_code}**"
+            return f"**{BRAND}**\n\n❌ **HTTP {response.status_code}**"
         
-        # Return raw data exactly as received
-        data = response.json()
-        formatted = json.dumps(data, indent=2, ensure_ascii=False)
-        return f"**{BRAND}**\n\n```json\n{formatted}\n```"
+        # RAW DATA - exactly as received, no filtering
+        try:
+            data = response.json()
+            # Just pretty print, no filtering
+            formatted = json.dumps(data, indent=2, ensure_ascii=False)
+            return f"**{BRAND}**\n\n```json\n{formatted}\n```"
+        except:
+            # If not JSON, return raw text
+            return f"**{BRAND}**\n\n```\n{response.text}\n```"
         
     except requests.exceptions.Timeout:
-        return f"**{BRAND}**\n\n❌ **Timeout**"
+        return f"**{BRAND}**\n\n❌ **Timeout after {API_TIMEOUT}s**"
+    except requests.exceptions.ConnectionError:
+        return f"**{BRAND}**\n\n❌ **Connection Error**"
     except Exception as e:
         return f"**{BRAND}**\n\n❌ **Error**"
 
@@ -523,20 +513,17 @@ def get_awesome_start(first_name, user_id, credits):
 """
     return start_style
 
-# ==================== ULTRA FAST START COMMAND ====================
+# ==================== START COMMAND ====================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     first_name = message.from_user.first_name or "User"
     
-    # Ultra fast response - no cleanup for speed
-    
     if is_user_banned(user_id) and user_id != OWNER_ID:
         bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
         return
     
-    # Check for referral (async)
     args = message.text.split()
     if len(args) > 1 and args[1].startswith('ref_'):
         try:
@@ -548,7 +535,6 @@ def send_welcome(message):
     
     credits = get_user_credits(user_id)
     
-    # If already verified, send welcome video + start message
     if is_user_verified(user_id):
         try:
             bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞 𝐁𝐚𝐜𝐤!**", parse_mode="Markdown", supports_streaming=True, timeout=2)
@@ -559,7 +545,6 @@ def send_welcome(message):
             bot.send_message(chat_id, start_text, parse_mode="Markdown")
         return
     
-    # New user - show image
     try:
         bot.send_photo(chat_id, START_IMAGE, caption="🌀 **𝐓𝐀𝐓𝐒𝐔𝐌𝐀𝐊𝐈**", parse_mode="Markdown")
     except:
@@ -586,7 +571,6 @@ def verify_callback(call):
     chat_id = call.message.chat.id
     first_name = call.from_user.first_name or "User"
     
-    # Delete verification message
     try:
         bot.delete_message(chat_id, call.message.message_id)
     except:
@@ -596,13 +580,11 @@ def verify_callback(call):
         mark_user_verified(user_id)
         credits = get_user_credits(user_id)
         
-        # Send welcome video
         try:
             bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞!**", parse_mode="Markdown", supports_streaming=True, timeout=2)
         except:
             pass
         
-        # Send start message
         start_text = get_awesome_start(first_name, user_id, credits)
         bot.send_message(chat_id, start_text, parse_mode="Markdown")
         
@@ -753,13 +735,12 @@ def verify_command(message):
             parse_mode="Markdown"
         )
 
-# ==================== ULTRA FAST INFO COMMANDS ====================
+# ==================== INFO COMMANDS - 3 SECOND TIMEOUT ====================
 @bot.message_handler(commands=list(API_COMMANDS.keys()))
 def info_commands(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Ultra fast checks
     if is_user_banned(user_id) and user_id != OWNER_ID:
         bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
         return
@@ -794,7 +775,10 @@ def info_commands(message):
         bot.reply_to(message, f"❌ /{cmd} [𝐯𝐚𝐥𝐮𝐞]")
         return
     
-    # Ultra fast - direct API call
+    # Send typing action
+    bot.send_chat_action(chat_id, 'typing')
+    
+    # Get raw data with 3 second timeout
     result = fetch_data(cmd, args)
     
     if user_id != OWNER_ID and not is_admin_user(user_id):
@@ -1378,7 +1362,8 @@ def run_bot():
     print("🚀 Tatsumaki Bot Starting...")
     print(f"👑 {BRAND}")
     print(f"👑 Owner ID: {OWNER_ID}")
-    print(f"⚡ Ultra Fast Mode: 0.23s Response")
+    print(f"⏱️ API Timeout: {API_TIMEOUT}s")
+    print("📦 RAW Data Mode: ON")
     print("=" * 30)
     
     try:
