@@ -11,7 +11,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from datetime import datetime, timedelta
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = os.environ.get('BOT_TOKEN', "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.environ.get('BOT_TOKEN', "8756118508:AAGA06F7DfF9A0T_bYQ1ymoGfNRe_UfGgNY")
 
 # ===== APNI API CONFIG =====
 API_BASE_URL = "https://apple-apixdev.onrender.com/api"
