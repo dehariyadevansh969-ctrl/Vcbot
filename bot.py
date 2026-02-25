@@ -8,6 +8,7 @@ import threading
 from flask import Flask, jsonify
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', "8756118508:AAGA06F7DfF9A0T_bYQ1ymoGfNRe_UfGgNY")
@@ -37,6 +38,13 @@ OWNER_ID = 8066199853
 FREE_CREDITS = 2
 REFERRAL_BONUS = 2
 REFERRALS_NEEDED = 5
+
+# ==================== SPEED OPTIMIZATIONS ====================
+executor = ThreadPoolExecutor(max_workers=10)
+api_cache = {}
+CACHE_TIME = 30
+db_cache = {}
+DB_CACHE_TIME = 60
 
 # ==================== DATABASE SETUP ====================
 db_path = '/tmp/bot_database.db'
@@ -98,64 +106,48 @@ ensure_owner_in_db()
 def is_admin_user(user_id):
     if user_id == OWNER_ID:
         return True
+    cache_key = f"admin_{user_id}"
+    if cache_key in db_cache:
+        cache_time, value = db_cache[cache_key]
+        if time.time() - cache_time < DB_CACHE_TIME:
+            return value
     c.execute("SELECT is_admin FROM users WHERE user_id = ?", (user_id,))
     result = c.fetchone()
-    return result and result[0] == 1
+    value = result and result[0] == 1
+    db_cache[cache_key] = (time.time(), value)
+    return value
 
 def is_owner_user(user_id):
     return user_id == OWNER_ID
 
 def is_user_banned(user_id):
+    cache_key = f"banned_{user_id}"
+    if cache_key in db_cache:
+        cache_time, value = db_cache[cache_key]
+        if time.time() - cache_time < DB_CACHE_TIME:
+            return value
     c.execute("SELECT * FROM banned_users WHERE user_id = ?", (user_id,))
-    return c.fetchone() is not None
+    value = c.fetchone() is not None
+    db_cache[cache_key] = (time.time(), value)
+    return value
 
 def get_setting(setting_name):
+    cache_key = f"setting_{setting_name}"
+    if cache_key in db_cache:
+        cache_time, value = db_cache[cache_key]
+        if time.time() - cache_time < DB_CACHE_TIME:
+            return value
     c.execute("SELECT setting_value FROM bot_settings WHERE setting_name = ?", (setting_name,))
     result = c.fetchone()
-    return result[0] if result else 'true'
+    value = result[0] if result else 'true'
+    db_cache[cache_key] = (time.time(), value)
+    return value
 
 def update_setting(setting_name, value, changed_by):
     c.execute("UPDATE bot_settings SET setting_value = ?, changed_by = ?, changed_date = ? WHERE setting_name = ?",
               (value, changed_by, datetime.now(), setting_name))
     conn.commit()
-
-# ==================== BAN/UNBAN FUNCTIONS ====================
-
-def ban_user(user_id, banned_by, reason="No reason"):
-    c.execute("INSERT OR REPLACE INTO banned_users VALUES (?, ?, ?, ?)",
-              (user_id, banned_by, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    c.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def unban_user(user_id):
-    c.execute("DELETE FROM banned_users WHERE user_id = ?", (user_id,))
-    c.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-# ==================== ADMIN FUNCTIONS ====================
-
-def add_admin(user_id):
-    c.execute("UPDATE users SET is_admin = 1, batch_type = 'admin', total_credits = 999999 WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def remove_admin(user_id):
-    if user_id != OWNER_ID:
-        c.execute("UPDATE users SET is_admin = 0, batch_type = 'free', total_credits = ? WHERE user_id = ?", (FREE_CREDITS, user_id))
-        conn.commit()
-
-def block_admin(user_id, blocked_by, reason="No reason"):
-    if user_id != OWNER_ID:
-        c.execute("UPDATE users SET is_admin = 0, is_banned = 1, batch_type = 'banned' WHERE user_id = ?", (user_id,))
-        c.execute("INSERT OR REPLACE INTO banned_users VALUES (?, ?, ?, ?)",
-                  (user_id, blocked_by, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-
-def set_admin_limit(user_id, limit):
-    if user_id != OWNER_ID:
-        c.execute("UPDATE users SET total_credits = ? WHERE user_id = ?", (limit, user_id))
-        conn.commit()
-
-# ==================== USER CREDITS FUNCTIONS ====================
+    db_cache.pop(f"setting_{setting_name}", None)
 
 def get_user_credits(user_id):
     if is_user_banned(user_id):
@@ -182,14 +174,11 @@ def get_user_credits(user_id):
 def use_credit(user_id):
     if user_id == OWNER_ID or is_admin_user(user_id):
         return True
-    
     if is_user_banned(user_id):
         return False
-    
     credit_system = get_setting('credit_system')
     if credit_system == 'false':
         return True
-    
     credits = get_user_credits(user_id)
     if credits['left'] > 0:
         c.execute("UPDATE users SET credits_used = credits_used + 1 WHERE user_id = ?", (user_id,))
@@ -201,14 +190,11 @@ def add_referral(referrer_id, referred_id):
     c.execute("SELECT * FROM referrals WHERE referrer_id = ? AND referred_id = ?", (referrer_id, referred_id))
     if c.fetchone():
         return False
-    
     c.execute("INSERT INTO referrals VALUES (?, ?, ?)",
              (referrer_id, referred_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     c.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
-    
     c.execute("SELECT referrals_count FROM users WHERE user_id = ?", (referrer_id,))
     count = c.fetchone()[0]
-    
     if count % REFERRALS_NEEDED == 0:
         c.execute("UPDATE users SET total_credits = total_credits + ? WHERE user_id = ?", (REFERRAL_BONUS, referrer_id))
         conn.commit()
@@ -242,15 +228,51 @@ def set_user_batch(user_id, batch_type):
     elif batch_type == 'admin':
         c.execute("UPDATE users SET total_credits = 999999, is_admin = 1 WHERE user_id = ?", (user_id,))
     conn.commit()
+    db_cache.pop(f"admin_{user_id}", None)
+
+def add_admin(user_id):
+    set_user_batch(user_id, 'admin')
+
+def remove_admin(user_id):
+    if user_id != OWNER_ID:
+        c.execute("UPDATE users SET is_admin = 0, batch_type = 'free', total_credits = ? WHERE user_id = ?", (FREE_CREDITS, user_id))
+        conn.commit()
+        db_cache.pop(f"admin_{user_id}", None)
+
+def block_admin(user_id, blocked_by, reason="No reason"):
+    if user_id != OWNER_ID:
+        c.execute("UPDATE users SET is_admin = 0, is_banned = 1, batch_type = 'banned' WHERE user_id = ?", (user_id,))
+        c.execute("INSERT OR REPLACE INTO banned_users VALUES (?, ?, ?, ?)",
+                  (user_id, blocked_by, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        db_cache.pop(f"admin_{user_id}", None)
+        db_cache.pop(f"banned_{user_id}", None)
+
+def set_admin_limit(user_id, limit):
+    if user_id != OWNER_ID:
+        c.execute("UPDATE users SET total_credits = ? WHERE user_id = ?", (limit, user_id))
+        conn.commit()
+
+def ban_user(user_id, banned_by, reason="No reason"):
+    c.execute("INSERT OR REPLACE INTO banned_users VALUES (?, ?, ?, ?)",
+              (user_id, banned_by, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    c.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    db_cache.pop(f"banned_{user_id}", None)
+
+def unban_user(user_id):
+    c.execute("DELETE FROM banned_users WHERE user_id = ?", (user_id,))
+    c.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    db_cache.pop(f"banned_{user_id}", None)
 
 # ==================== BOT INIT ====================
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Dictionary to store user's last message IDs for cleanup
+# Message tracking for cleanup
 user_last_messages = {}
 
 def cleanup_previous_messages(chat_id, user_id, exclude_msg_id=None):
-    """Delete user's previous messages to keep chat clean"""
     if user_id in user_last_messages:
         for msg_id in user_last_messages[user_id]:
             if exclude_msg_id and msg_id == exclude_msg_id:
@@ -262,11 +284,9 @@ def cleanup_previous_messages(chat_id, user_id, exclude_msg_id=None):
     user_last_messages[user_id] = []
 
 def track_message(user_id, message_id):
-    """Track user's messages for later cleanup"""
     if user_id not in user_last_messages:
         user_last_messages[user_id] = []
     user_last_messages[user_id].append(message_id)
-    # Keep only last 5 messages
     if len(user_last_messages[user_id]) > 5:
         user_last_messages[user_id] = user_last_messages[user_id][-5:]
 
@@ -275,14 +295,21 @@ def check_membership(user_id):
     join_check = get_setting('join_check')
     if join_check == 'false':
         return True
-    
     try:
-        group_member = bot.get_chat_member(GROUP_ID, user_id)
-        group_ok = group_member.status in ['member', 'administrator', 'creator']
-        
-        channel_member = bot.get_chat_member(CHANNEL_ID, user_id)
-        channel_ok = channel_member.status in ['member', 'administrator', 'creator']
-        
+        def check_group():
+            try:
+                return bot.get_chat_member(GROUP_ID, user_id).status in ['member', 'administrator', 'creator']
+            except:
+                return False
+        def check_channel():
+            try:
+                return bot.get_chat_member(CHANNEL_ID, user_id).status in ['member', 'administrator', 'creator']
+            except:
+                return False
+        future_group = executor.submit(check_group)
+        future_channel = executor.submit(check_channel)
+        group_ok = future_group.result(timeout=2)
+        channel_ok = future_channel.result(timeout=2)
         return group_ok and channel_ok
     except:
         return False
@@ -298,23 +325,23 @@ def mark_user_verified(user_id):
 
 # ==================== API FUNCTION ====================
 def fetch_data(endpoint, query):
+    cache_key = f"{endpoint}_{query}"
+    if cache_key in api_cache:
+        cache_time, result = api_cache[cache_key]
+        if time.time() - cache_time < CACHE_TIME:
+            return result
     start_time = time.time()
     try:
         url = f"{API_BASE_URL}/{endpoint}?key={API_KEY}&num={query}"
-        print(f"Fetching: {url}")
-        
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=5)
         data = response.json()
-        
         elapsed = round(time.time() - start_time, 2)
-        
         final_data = {
             "brand": BRAND,
             "creator": CREATOR,
             "time": f"{elapsed}s",
             "success": True
         }
-        
         if isinstance(data, dict):
             if 'data' in data:
                 final_data['data'] = data['data']
@@ -324,49 +351,45 @@ def fetch_data(endpoint, query):
             final_data['data'] = data
         else:
             final_data['data'] = {"result": data}
-        
         formatted = json.dumps(final_data, indent=2, ensure_ascii=False)
-        return f"**{BRAND}**\n\n```json\n{formatted}\n```"
-        
-    except requests.exceptions.Timeout:
-        return f"**{BRAND}**\n\n❌ API Timeout! Server slow."
-    except requests.exceptions.ConnectionError:
-        return f"**{BRAND}**\n\n❌ Connection Error! API down."
-    except Exception as e:
-        return f"**{BRAND}**\n\n❌ Error: {str(e)}"
+        result = f"**{BRAND}**\n\n```json\n{formatted}\n```"
+        api_cache[cache_key] = (time.time(), result)
+        return result
+    except:
+        return f"**{BRAND}**\n\n❌ Error"
 
 # ==================== API COMMANDS LIST ====================
 API_COMMANDS = {
-    'num': '📱 Phone Number Lookup',
-    'insta': '📸 Instagram Profile Info',
-    'rto': '🚗 RTO Vehicle Details',
-    'ff': '🎮 Free Fire UID Info',
-    'ip': '🌐 IP Address Geolocation',
-    'pan': '💳 PAN Card Details',
-    'ifsc': '🏦 IFSC Code Bank Info',
-    'aadhar': '🆔 Aadhar Card Info',
-    'vehicle': '🚘 Vehicle Registration Details',
-    'mail': '📧 Email Address Lookup'
+    'num': '📱 Phone Number',
+    'insta': '📸 Instagram',
+    'rto': '🚗 RTO Details',
+    'ff': '🎮 Free Fire',
+    'ip': '🌐 IP Location',
+    'pan': '💳 PAN Card',
+    'ifsc': '🏦 IFSC Code',
+    'aadhar': '🆔 Aadhar',
+    'vehicle': '🚘 Vehicle',
+    'mail': '📧 Email'
 }
 
 # ==================== MESSAGES ====================
 
 HELP_MESSAGE = f"""
 ╔══════════════════════════════╗
-║     🌀 HELP MENU 🌀          ║
+║     🌀 𝐇𝐄𝐋𝐏 𝐌𝐄𝐍𝐔 🌀       ║
 ╠══════════════════════════════╣
 ║   {BRAND}                    ║
 ╠══════════════════════════════╣
-║   📌 BASIC COMMANDS:         ║
+║   📌 𝐁𝐀𝐒𝐈𝐂 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒:      ║
 ║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   /start - Start Bot         ║
-║   /help - This Menu          ║
-║   /profile - Your Stats      ║
-║   /share - Referral Link     ║
-║   /verify - Verify Member    ║
-║   /admins - Contact Team     ║
+║   /start - 𝐒𝐭𝐚𝐫𝐭 𝐁𝐨𝐭       ║
+║   /help - 𝐓𝐡𝐢𝐬 𝐌𝐞𝐧𝐮        ║
+║   /profile - 𝐘𝐨𝐮𝐫 𝐒𝐭𝐚𝐭𝐬    ║
+║   /share - 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥 𝐋𝐢𝐧𝐤   ║
+║   /verify - 𝐕𝐞𝐫𝐢𝐟𝐲 𝐌𝐞𝐦𝐛𝐞𝐫  ║
+║   /admins - 𝐂𝐨𝐧𝐭𝐚𝐜𝐭 𝐓𝐞𝐚𝐦   ║
 ╠══════════════════════════════╣
-║   🔍 INFO COMMANDS:          ║
+║   🔍 𝐈𝐍𝐅𝐎 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒:       ║
 ║   ━━━━━━━━━━━━━━━━━━━━━       ║
 """
 
@@ -375,90 +398,162 @@ for cmd, desc in API_COMMANDS.items():
 
 HELP_MESSAGE += f"""
 ╠══════════════════════════════╣
-║   💡 Examples:               ║
+║   💡 𝐄𝐱𝐚𝐦𝐩𝐥𝐞𝐬:              ║
 ║   /num 9876543210           ║
 ║   /insta virat.kohli        ║
 ║   /aadhar 123456789012      ║
 ╠══════════════════════════════╣
-║   ⚡ FREE: {FREE_CREDITS} Credits     ║
-║   🔥 Refer {REFERRALS_NEEDED} = +{REFERRAL_BONUS} ║
+║   ⚡ 𝐅𝐫𝐞𝐞: {FREE_CREDITS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬  ║
+║   🔥 𝐑𝐞𝐟𝐞𝐫 {REFERRALS_NEEDED} = +{REFERRAL_BONUS} ║
 ║   👑 {BRAND}                  ║
 ╚══════════════════════════════╝
 """
 
 WELCOME_CAPTION = f"""
 ╔══════════════════════════════╗
-║     🌀 WELCOME TO BOT 🌀     ║
+║     🌀 𝐖𝐄𝐋𝐂𝐎𝐌𝐄 𝐓𝐎 𝐁𝐎𝐓 🌀  ║
 ╠══════════════════════════════╣
 ║   {BRAND}                    ║
 ╠══════════════════════════════╣
-║   ✅ VERIFICATION SUCCESSFUL ║
+║   ✅ 𝐕𝐄𝐑𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍 𝐒𝐔𝐂𝐂𝐄𝐒𝐒 ║
 ║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   ✨ You can now use the bot! ║
-║   ⚡ Free: {FREE_CREDITS} Credits    ║
-║   📌 Use /help for commands   ║
+║   ✨ 𝐘𝐨𝐮 𝐜𝐚𝐧 𝐧𝐨𝐰 𝐮𝐬𝐞 𝐭𝐡𝐞 𝐛𝐨𝐭! ║
+║   ⚡ 𝐅𝐫𝐞𝐞: {FREE_CREDITS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬    ║
+║   📌 𝐔𝐬𝐞 /help 𝐟𝐨𝐫 𝐜𝐨𝐦𝐦𝐚𝐧𝐝𝐬   ║
 ║   👑 {BRAND}                  ║
 ╚══════════════════════════════╝
 """
+
+def get_awesome_start(first_name, user_id, credits):
+    batch = credits['batch']
+    if batch == 'owner':
+        title = "👑 𝐎𝐖𝐍𝐄𝐑 👑"
+        color = "🔥"
+    elif batch == 'admin':
+        title = "👥 𝐀𝐃𝐌𝐈𝐍 👥"
+        color = "⚡"
+    elif batch == 'star':
+        title = "⭐ 𝐒𝐓𝐀𝐑 ⭐"
+        color = "✨"
+    elif batch == 'premium':
+        title = "💎 𝐏𝐑𝐄𝐌𝐈𝐔𝐌 💎"
+        color = "💜"
+    else:
+        title = "👤 𝐅𝐑𝐄𝐄 𝐔𝐒𝐄𝐑 👤"
+        color = "💚"
+    
+    cmd_list = ""
+    cmds = list(API_COMMANDS.items())
+    for i in range(0, len(cmds), 2):
+        cmd1, desc1 = cmds[i]
+        if i+1 < len(cmds):
+            cmd2, desc2 = cmds[i+1]
+            cmd_list += f"║   /{cmd1:<8} {desc1:<12}  /{cmd2:<8} {desc2}\n"
+        else:
+            cmd_list += f"║   /{cmd1:<8} {desc1}\n"
+    
+    start_style = f"""
+╔══════════════════════════════════════╗
+║     🌀 𝐓𝐀𝐓𝐒𝐔𝐌𝐀𝐊𝐈 𝐁𝐎𝐓 🌀     ║
+╠══════════════════════════════════════╣
+║        ✨ 𝐖𝐄𝐋𝐂𝐎𝐌𝐄 ✨         ║
+║   ━━━━━━━━━━━━━━━━━━━━━━━━━   ║
+║                                  ║
+║   👋 𝐇𝐞𝐥𝐥𝐨, {first_name}!  ║
+║   {color} {title}              ║
+║                                  ║
+║   🆔 𝐔𝐬𝐞𝐫 𝐈𝐃: {user_id}       ║
+║   💰 𝐂𝐫𝐞𝐝𝐢𝐭𝐬: {credits['left']}/{credits['total']}      ║
+║                                  ║
+╠══════════════════════════════════════╣
+║     ⚡ 𝐖𝐇𝐀𝐓 𝐈 𝐂𝐀𝐍 𝐃𝐎 ⚡     ║
+║   ━━━━━━━━━━━━━━━━━━━━━━━━━   ║
+║                                  ║
+{cmd_list}
+║                                  ║
+╠══════════════════════════════════════╣
+║     🔥 𝐔𝐒𝐄𝐅𝐔𝐋 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒 🔥   ║
+║   ━━━━━━━━━━━━━━━━━━━━━━━━━   ║
+║                                  ║
+║   📌 /profile  - 𝐘𝐨𝐮𝐫 𝐒𝐭𝐚𝐭𝐬  ║
+║   📌 /share    - 𝐆𝐞𝐭 𝐋𝐢𝐧𝐤    ║
+║   📌 /help     - 𝐀𝐥𝐥 𝐂𝐦𝐝𝐬    ║
+║   📌 /admins   - 𝐂𝐨𝐧𝐭𝐚𝐜𝐭     ║
+║                                  ║
+╠══════════════════════════════════════╣
+║   💡 𝐅𝐫𝐞𝐞: {FREE_CREDITS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬     ║
+║   🔥 𝐑𝐞𝐟𝐞𝐫 {REFERRALS_NEEDED} = +{REFERRAL_BONUS}    ║
+║   👑 {BRAND}                 ║
+╚══════════════════════════════════════╝
+"""
+    return start_style
 
 # ==================== START COMMAND ====================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
+    first_name = message.from_user.first_name or "User"
     
-    # Cleanup previous messages
-    cleanup_previous_messages(chat_id, user_id)
+    if user_id in user_last_messages:
+        for msg_id in user_last_messages[user_id][-3:]:
+            try:
+                bot.delete_message(chat_id, msg_id)
+            except:
+                pass
     
     if is_user_banned(user_id) and user_id != OWNER_ID:
-        msg = bot.reply_to(message, "🚫 You are banned from using this bot!")
+        msg = bot.reply_to(message, "🚫 𝐘𝐨𝐮 𝐚𝐫𝐞 𝐛𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
         track_message(user_id, msg.message_id)
         return
     
-    # Check for referral
     args = message.text.split()
     if len(args) > 1 and args[1].startswith('ref_'):
         try:
             referrer_id = int(args[1].replace('ref_', ''))
             if referrer_id != user_id:
-                add_referral(referrer_id, user_id)
+                executor.submit(add_referral, referrer_id, user_id)
         except:
             pass
     
-    # Step 1: Image bhejo
+    credits = get_user_credits(user_id)
+    
     try:
-        img_msg = bot.send_photo(chat_id, START_IMAGE, caption="🌀 **Tatsumaki Bot**", parse_mode="Markdown")
+        img_msg = bot.send_photo(chat_id, START_IMAGE, caption="🌀 **𝐓𝐀𝐓𝐒𝐔𝐌𝐀𝐊𝐈**", parse_mode="Markdown")
         track_message(user_id, img_msg.message_id)
     except:
-        img_msg = bot.send_message(chat_id, "🌀 **Tatsumaki Bot**", parse_mode="Markdown")
+        img_msg = bot.send_message(chat_id, "🌀 **𝐓𝐀𝐓𝐒𝐔𝐌𝐀𝐊𝐈**", parse_mode="Markdown")
         track_message(user_id, img_msg.message_id)
     
-    time.sleep(1)
+    time.sleep(0.5)
     
-    # Step 2: Check if already verified
     if is_user_verified(user_id):
-        # Cleanup again before welcome video
-        cleanup_previous_messages(chat_id, user_id, img_msg.message_id)
+        try:
+            bot.delete_message(chat_id, img_msg.message_id)
+        except:
+            pass
+        
+        start_text = get_awesome_start(first_name, user_id, credits)
+        start_msg = bot.send_message(chat_id, start_text, parse_mode="Markdown")
+        track_message(user_id, start_msg.message_id)
         
         try:
-            video_msg = bot.send_video(chat_id, WELCOME_VIDEO, caption=WELCOME_CAPTION, parse_mode="Markdown", supports_streaming=True)
+            video_msg = bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞!**", parse_mode="Markdown", supports_streaming=True, timeout=5)
             track_message(user_id, video_msg.message_id)
         except:
-            text_msg = bot.send_message(chat_id, WELCOME_CAPTION, parse_mode="Markdown")
-            track_message(user_id, text_msg.message_id)
+            pass
         return
     
-    # Step 3: Membership button
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("📢 Join Group", url=GROUP_LINK),
-        InlineKeyboardButton("📣 Join Channel", url=CHANNEL_LINK)
+        InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧 𝐆𝐫𝐨𝐮𝐩", url=GROUP_LINK),
+        InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url=CHANNEL_LINK)
     )
-    markup.add(InlineKeyboardButton("✅ Verify Membership", callback_data="verify"))
+    markup.add(InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲", callback_data="verify"))
     
     verify_msg = bot.send_message(
         chat_id,
-        "**🔒 Membership Required!**\n\n1️⃣ Join Group & Channel\n2️⃣ Click Verify button",
+        f"👋 **𝐇𝐞𝐥𝐥𝐨 {first_name}!**\n\n🔒 **𝐌𝐞𝐦𝐛𝐞𝐫𝐬𝐡𝐢𝐩 𝐑𝐞𝐪𝐮𝐢𝐫𝐞𝐝**\n\n1️⃣ 𝐉𝐨𝐢𝐧 𝐆𝐫𝐨𝐮𝐩 & 𝐂𝐡𝐚𝐧𝐧𝐞𝐥\n2️⃣ 𝐂𝐥𝐢𝐜𝐤 𝐕𝐞𝐫𝐢𝐟𝐲",
         reply_markup=markup,
         parse_mode="Markdown"
     )
@@ -469,49 +564,48 @@ def send_welcome(message):
 def verify_callback(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
-    message_id = call.message.message_id
+    first_name = call.from_user.first_name or "User"
     
-    # Delete the verify message
     try:
-        bot.delete_message(chat_id, message_id)
+        bot.delete_message(chat_id, call.message.message_id)
     except:
         pass
     
-    # Clear previous messages
-    cleanup_previous_messages(chat_id, user_id)
-    
-    if is_user_banned(user_id) and user_id != OWNER_ID:
-        bot.answer_callback_query(call.id, "❌ You are banned!", show_alert=True)
-        return
+    if user_id in user_last_messages:
+        user_last_messages[user_id] = []
     
     if check_membership(user_id):
         mark_user_verified(user_id)
+        credits = get_user_credits(user_id)
+        
+        start_text = get_awesome_start(first_name, user_id, credits)
+        start_msg = bot.send_message(chat_id, start_text, parse_mode="Markdown")
+        track_message(user_id, start_msg.message_id)
         
         try:
-            video_msg = bot.send_video(chat_id, WELCOME_VIDEO, caption=WELCOME_CAPTION, parse_mode="Markdown", supports_streaming=True)
+            video_msg = bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞!**", parse_mode="Markdown", supports_streaming=True, timeout=5)
             track_message(user_id, video_msg.message_id)
         except:
-            text_msg = bot.send_message(chat_id, WELCOME_CAPTION, parse_mode="Markdown")
-            track_message(user_id, text_msg.message_id)
+            pass
         
-        bot.answer_callback_query(call.id, "✅ Verified! Welcome!")
+        bot.answer_callback_query(call.id, "✅ 𝐕𝐞𝐫𝐢𝐟𝐢𝐞𝐝!")
     else:
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("📢 Join Group", url=GROUP_LINK),
-            InlineKeyboardButton("📣 Join Channel", url=CHANNEL_LINK)
+            InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧", url=GROUP_LINK),
+            InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧", url=CHANNEL_LINK)
         )
-        markup.add(InlineKeyboardButton("✅ Try Again", callback_data="verify"))
+        markup.add(InlineKeyboardButton("✅ 𝐓𝐫𝐲 𝐀𝐠𝐚𝐢𝐧", callback_data="verify"))
         
         fail_msg = bot.send_message(
             chat_id,
-            "❌ **Not a member!**\n\nPlease join both Group & Channel first.",
+            "❌ **𝐍𝐨𝐭 𝐚 𝐦𝐞𝐦𝐛𝐞𝐫!**\n\n𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐛𝐨𝐭𝐡 𝐠𝐫𝐨𝐮𝐩 & 𝐜𝐡𝐚𝐧𝐧𝐞𝐥.",
             reply_markup=markup,
             parse_mode="Markdown"
         )
         track_message(user_id, fail_msg.message_id)
         
-        bot.answer_callback_query(call.id, "❌ Not verified")
+        bot.answer_callback_query(call.id, "❌ 𝐅𝐚𝐢𝐥𝐞𝐝")
 
 # ==================== HELP COMMAND ====================
 @bot.message_handler(commands=['help'])
@@ -519,9 +613,7 @@ def help_command(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Cleanup previous messages
     cleanup_previous_messages(chat_id, user_id, message.message_id)
-    
     help_msg = bot.reply_to(message, HELP_MESSAGE, parse_mode="Markdown")
     track_message(user_id, help_msg.message_id)
 
@@ -531,15 +623,13 @@ def profile_command(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Cleanup previous messages
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if is_user_banned(user_id) and user_id != OWNER_ID:
-        msg = bot.reply_to(message, "🚫 You are banned!")
+        msg = bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
         track_message(user_id, msg.message_id)
         return
     
-    username = message.from_user.username or "unknown"
     credits = get_user_credits(user_id)
     next_bonus = REFERRALS_NEEDED - (credits['referrals'] % REFERRALS_NEEDED)
     if next_bonus == REFERRALS_NEEDED:
@@ -547,23 +637,22 @@ def profile_command(message):
     
     profile_msg = f"""
 ╔══════════════════════════════╗
-║     📊 YOUR PROFILE         ║
+║     📊 𝐏𝐑𝐎𝐅𝐈𝐋𝐄 📊         ║
 ╠══════════════════════════════╣
 ║   {BRAND}                    ║
 ╠══════════════════════════════╣
-║   👤 ID: {user_id}           ║
-║   📛 @{username}             ║
-║   🏷️ Batch: {credits['batch'].upper()} ║
+║   👤 𝐈𝐃: {user_id}           ║
+║   🏷️ 𝐁𝐚𝐭𝐜𝐡: {credits['batch'].upper()} ║
 ╠══════════════════════════════╣
-║   💰 CREDITS:                ║
+║   💰 𝐂𝐑𝐄𝐃𝐈𝐓𝐒:               ║
 ║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   📊 Used: {credits['used']}/{credits['total']}  ║
-║   💎 Left: {credits['left']}           ║
+║   📊 𝐔𝐬𝐞𝐝: {credits['used']}/{credits['total']}  ║
+║   💎 𝐋𝐞𝐟𝐭: {credits['left']}           ║
 ║                               ║
-║   👥 Referrals: {credits['referrals']}   ║
-║   🔥 Next Bonus: {next_bonus}          ║
+║   👥 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥𝐬: {credits['referrals']}   ║
+║   🔥 𝐍𝐞𝐱𝐭: {next_bonus} 𝐦𝐨𝐫𝐞      ║
 ╠══════════════════════════════╣
-║   🔗 /share - Get Referral   ║
+║   🔗 /share - 𝐆𝐞𝐭 𝐋𝐢𝐧𝐤      ║
 ║   👑 {BRAND}                  ║
 ╚══════════════════════════════╝
 """
@@ -576,11 +665,10 @@ def share_command(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Cleanup previous messages
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if is_user_banned(user_id) and user_id != OWNER_ID:
-        msg = bot.reply_to(message, "🚫 You are banned!")
+        msg = bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
         track_message(user_id, msg.message_id)
         return
     
@@ -591,21 +679,21 @@ def share_command(message):
     
     share_msg = f"""
 ╔══════════════════════════════╗
-║     🔗 YOUR REFERRAL LINK   ║
+║     🔗 𝐑𝐄𝐅𝐄𝐑𝐑𝐀𝐋 𝐋𝐈𝐍𝐊     ║
 ╠══════════════════════════════╣
 ║   {BRAND}                    ║
 ╠══════════════════════════════╣
-║   👥 Referrals: {credits['referrals']}   ║
-║   🔥 Need {next_bonus} more    ║
-║   ✨ +{REFERRAL_BONUS} Credits    ║
+║   👥 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥𝐬: {credits['referrals']}   ║
+║   🔥 𝐍𝐞𝐞𝐝 {next_bonus} 𝐦𝐨𝐫𝐞    ║
+║   ✨ +{REFERRAL_BONUS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬    ║
 ╠══════════════════════════════╣
 ║   `{referral_link}`          ║
 ╠══════════════════════════════╣
-║   📤 Share with friends!     ║
+║   📤 𝐒𝐡𝐚𝐫𝐞 & 𝐄𝐚𝐫𝐧!         ║
 ╚══════════════════════════════╝
 """
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("📤 Share", switch_inline_query=f"Join Bot! {referral_link}"))
+    markup.add(InlineKeyboardButton("📤 𝐒𝐡𝐚𝐫𝐞", switch_inline_query=f"Join {BRAND} Bot! {referral_link}"))
     
     msg = bot.reply_to(message, share_msg, parse_mode="Markdown", reply_markup=markup)
     track_message(user_id, msg.message_id)
@@ -616,21 +704,20 @@ def admins_command(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Cleanup previous messages
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("👑 Contact Owner", url=f"tg://user?id={OWNER_ID}"))
+    markup.add(InlineKeyboardButton("👑 𝐂𝐨𝐧𝐭𝐚𝐜𝐭 𝐎𝐰𝐧𝐞𝐫", url=f"tg://user?id={OWNER_ID}"))
     
     msg_text = f"""
 ╔══════════════════════════════╗
-║     👑 CONTACT TEAM 👑      ║
+║     👑 𝐂𝐎𝐍𝐓𝐀𝐂𝐓 𝐓𝐄𝐀𝐌 👑   ║
 ╠══════════════════════════════╣
 ║   {BRAND}                    ║
 ╠══════════════════════════════╣
-║   Owner ID: {OWNER_ID}       ║
+║   𝐎𝐰𝐧𝐞𝐫 𝐈𝐃: {OWNER_ID}      ║
 ╠══════════════════════════════╣
-║   Click below to message     ║
+║   𝐂𝐥𝐢𝐜𝐤 𝐛𝐞𝐥𝐨𝐰 𝐭𝐨 𝐦𝐞𝐬𝐬𝐚𝐠𝐞   ║
 ╚══════════════════════════════╝
 """
     msg = bot.reply_to(message, msg_text, parse_mode="Markdown", reply_markup=markup)
@@ -641,49 +728,52 @@ def admins_command(message):
 def verify_command(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
+    first_name = message.from_user.first_name or "User"
     
-    # Cleanup previous messages
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if is_user_banned(user_id) and user_id != OWNER_ID:
-        msg = bot.reply_to(message, "🚫 You are banned!")
+        msg = bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
         track_message(user_id, msg.message_id)
         return
     
     if check_membership(user_id):
         mark_user_verified(user_id)
+        credits = get_user_credits(user_id)
+        
+        start_text = get_awesome_start(first_name, user_id, credits)
+        start_msg = bot.send_message(chat_id, start_text, parse_mode="Markdown")
+        track_message(user_id, start_msg.message_id)
         
         try:
-            video_msg = bot.send_video(chat_id, WELCOME_VIDEO, caption=WELCOME_CAPTION, parse_mode="Markdown", supports_streaming=True)
+            video_msg = bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞!**", parse_mode="Markdown", supports_streaming=True, timeout=5)
             track_message(user_id, video_msg.message_id)
         except:
-            text_msg = bot.send_message(chat_id, WELCOME_CAPTION, parse_mode="Markdown")
-            track_message(user_id, text_msg.message_id)
+            pass
     else:
         markup = InlineKeyboardMarkup()
         markup.add(
-            InlineKeyboardButton("📢 Join Group", url=GROUP_LINK),
-            InlineKeyboardButton("📣 Join Channel", url=CHANNEL_LINK)
+            InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧", url=GROUP_LINK),
+            InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧", url=CHANNEL_LINK)
         )
         fail_msg = bot.reply_to(
             message,
-            "❌ **Not a member!**\n\nPlease join Group & Channel first.",
+            "❌ **𝐍𝐨𝐭 𝐚 𝐦𝐞𝐦𝐛𝐞𝐫!**\n\n𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐟𝐢𝐫𝐬𝐭.",
             reply_markup=markup,
             parse_mode="Markdown"
         )
         track_message(user_id, fail_msg.message_id)
 
-# ==================== INFO COMMANDS WITH ANIMATION ====================
+# ==================== INFO COMMANDS ====================
 @bot.message_handler(commands=list(API_COMMANDS.keys()))
 def info_commands(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Cleanup previous messages
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if is_user_banned(user_id) and user_id != OWNER_ID:
-        msg = bot.reply_to(message, "🚫 You are banned from using this bot!")
+        msg = bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
         track_message(user_id, msg.message_id)
         return
     
@@ -691,26 +781,22 @@ def info_commands(message):
         if not check_membership(user_id):
             markup = InlineKeyboardMarkup()
             markup.add(
-                InlineKeyboardButton("📢 Join Group", url=GROUP_LINK),
-                InlineKeyboardButton("📣 Join Channel", url=CHANNEL_LINK)
+                InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧", url=GROUP_LINK),
+                InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧", url=CHANNEL_LINK)
             )
-            deny_msg = bot.reply_to(
-                message,
-                "❌ **Access Denied!**\n\nPlease join Group & Channel first.\nThen use /verify",
-                reply_markup=markup,
-                parse_mode="Markdown"
-            )
+            deny_msg = bot.reply_to(message, "❌ 𝐉𝐨𝐢𝐧 𝐟𝐢𝐫𝐬𝐭!", reply_markup=markup)
             track_message(user_id, deny_msg.message_id)
             return
         else:
             mark_user_verified(user_id)
     
-    if not use_credit(user_id):
+    credits = get_user_credits(user_id)
+    if credits['left'] <= 0 and user_id != OWNER_ID and not is_admin_user(user_id):
         bot_username = bot.get_me().username
         referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
         no_credit_msg = bot.reply_to(
             message,
-            f"❌ **No Credits Left!**\n\nShare with {REFERRALS_NEEDED} friends to get +{REFERRAL_BONUS} credits!\n\n/share\n\n{referral_link}",
+            f"❌ 𝐍𝐨 𝐜𝐫𝐞𝐝𝐢𝐭𝐬!\n/share\n{referral_link}",
             parse_mode="Markdown"
         )
         track_message(user_id, no_credit_msg.message_id)
@@ -720,65 +806,54 @@ def info_commands(message):
     args = message.text.split()[1] if len(message.text.split()) > 1 else None
     
     if not args:
-        usage_msg = bot.reply_to(message, f"❌ Usage: /{cmd} [value]\n\nExample: /{cmd} 9876543210")
+        usage_msg = bot.reply_to(message, f"❌ /{cmd} [𝐯𝐚𝐥𝐮𝐞]")
         track_message(user_id, usage_msg.message_id)
         return
     
-    # Send typing action
     bot.send_chat_action(chat_id, 'typing')
+    anim_msg = bot.reply_to(message, "⚡", parse_mode="Markdown")
     
-    # Animation frames
-    frames = ["🔍 Searching", "🔍 Searching.", "🔍 Searching..", "🔍 Searching...", 
-              "⚡ Processing", "⚡ Processing.", "⚡ Processing..", "⚡ Processing...",
-              "📡 Fetching data", "📡 Fetching data.", "📡 Fetching data..", "📡 Fetching data..."]
+    future = executor.submit(fetch_data, cmd, args)
     
-    # Send search animation
-    search_msg = bot.reply_to(message, "🔍 **Searching**", parse_mode="Markdown")
-    
-    # Animate search (6 quick updates)
-    for i in range(6):
-        time.sleep(0.4)
-        try:
-            bot.edit_message_text(f"**{frames[i]}**", chat_id, search_msg.message_id, parse_mode="Markdown")
-        except:
-            pass
-    
-    # Fetch data
-    result = fetch_data(cmd, args)
-    
-    # Delete search message
     try:
-        bot.delete_message(chat_id, search_msg.message_id)
+        time.sleep(0.2)
+        bot.edit_message_text("🔍", chat_id, anim_msg.message_id, parse_mode="Markdown")
+        time.sleep(0.2)
     except:
         pass
     
-    # Get credits
-    credits = get_user_credits(user_id)
+    result = future.result(timeout=4)
     
-    # Send result with remaining credits
-    final_msg = result + f"\n\n⚡ Remaining: {credits['left']}"
+    try:
+        bot.delete_message(chat_id, anim_msg.message_id)
+    except:
+        pass
+    
+    if user_id != OWNER_ID and not is_admin_user(user_id):
+        executor.submit(use_credit, user_id)
+    
+    final_msg = result + f"\n\n⚡ 𝐋𝐞𝐟𝐭: {credits['left']-1 if credits['left'] > 0 else 0}"
     result_msg = bot.reply_to(message, final_msg, parse_mode="Markdown")
     track_message(user_id, result_msg.message_id)
 
-# ==================== ADMIN COMMANDS ====================
+# ==================== USER MANAGEMENT COMMANDS ====================
 
 @bot.message_handler(commands=['ban'])
 def ban_command(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # Cleanup previous messages
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /ban [user_id] [reason]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /ban [𝐢𝐝] [𝐫𝐞𝐚𝐬𝐨𝐧]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
@@ -786,16 +861,16 @@ def ban_command(message):
         reason = " ".join(args[2:]) if len(args) > 2 else "No reason"
         
         if target == OWNER_ID:
-            error_msg = bot.reply_to(message, "❌ Cannot ban owner!")
-            track_message(user_id, error_msg.message_id)
+            msg = bot.reply_to(message, "❌ 𝐂𝐚𝐧'𝐭 𝐛𝐚𝐧 𝐨𝐰𝐧𝐞𝐫!")
+            track_message(user_id, msg.message_id)
             return
         
         ban_user(target, user_id, reason)
-        success_msg = bot.reply_to(message, f"✅ User {target} banned!\nReason: {reason}")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐁𝐚𝐧𝐧𝐞𝐝 `{target}`!\n𝐑𝐞𝐚𝐬𝐨𝐧: {reason}", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['unban'])
 def unban_command(message):
@@ -805,24 +880,24 @@ def unban_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /unban [user_id]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /unban [𝐢𝐝]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         unban_user(target)
-        success_msg = bot.reply_to(message, f"✅ User {target} unbanned!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐔𝐧𝐛𝐚𝐧𝐧𝐞𝐝 `{target}`!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['userinfo'])
 def userinfo_command(message):
@@ -832,14 +907,14 @@ def userinfo_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /userinfo [user_id]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /userinfo [𝐢𝐝]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
@@ -847,20 +922,22 @@ def userinfo_command(message):
         credits = get_user_credits(target)
         
         info_msg = f"""
-📊 **USER INFO**
+📊 **𝐔𝐒𝐄𝐑 𝐈𝐍𝐅𝐎**
 ━━━━━━━━━━━━━━━━
-🆔 ID: {target}
-🏷️ Batch: {credits['batch'].upper()}
-👑 Admin: {'Yes' if is_admin_user(target) else 'No'}
-🔴 Banned: {'Yes' if is_user_banned(target) else 'No'}
-💰 Credits: {credits['used']}/{credits['total']}
-👥 Referrals: {credits['referrals']}
+🆔 𝐈𝐃: {target}
+🏷️ 𝐁𝐚𝐭𝐜𝐡: {credits['batch'].upper()}
+👑 𝐀𝐝𝐦𝐢𝐧: {'𝐘𝐞𝐬' if is_admin_user(target) else '𝐍𝐨'}
+🔴 𝐁𝐚𝐧𝐧𝐞𝐝: {'𝐘𝐞𝐬' if is_user_banned(target) else '𝐍𝐨'}
+💰 𝐂𝐫𝐞𝐝𝐢𝐭𝐬: {credits['used']}/{credits['total']}
+👥 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥𝐬: {credits['referrals']}
 """
         result_msg = bot.reply_to(message, info_msg, parse_mode="Markdown")
         track_message(user_id, result_msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
+
+# ==================== ADMIN MANAGEMENT COMMANDS ====================
 
 @bot.message_handler(commands=['addadmin'])
 def addadmin_command(message):
@@ -870,28 +947,28 @@ def addadmin_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /addadmin [user_id]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /addadmin [𝐢𝐝]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         if target == OWNER_ID:
-            error_msg = bot.reply_to(message, "❌ User is already owner!")
-            track_message(user_id, error_msg.message_id)
+            msg = bot.reply_to(message, "❌ 𝐔𝐬𝐞𝐫 𝐢𝐬 𝐚𝐥𝐫𝐞𝐚𝐝𝐲 𝐨𝐰𝐧𝐞𝐫!")
+            track_message(user_id, msg.message_id)
             return
         add_admin(target)
-        success_msg = bot.reply_to(message, f"✅ User {target} is now ADMIN!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨𝐰 𝐀𝐃𝐌𝐈𝐍!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['removeadmin'])
 def removeadmin_command(message):
@@ -901,28 +978,28 @@ def removeadmin_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /removeadmin [user_id]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /removeadmin [𝐢𝐝]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         if target == OWNER_ID:
-            error_msg = bot.reply_to(message, "❌ Cannot remove owner!")
-            track_message(user_id, error_msg.message_id)
+            msg = bot.reply_to(message, "❌ 𝐂𝐚𝐧𝐧𝐨𝐭 𝐫𝐞𝐦𝐨𝐯𝐞 𝐨𝐰𝐧𝐞𝐫!")
+            track_message(user_id, msg.message_id)
             return
         remove_admin(target)
-        success_msg = bot.reply_to(message, f"✅ User {target} is no longer admin!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨 𝐥𝐨𝐧𝐠𝐞𝐫 𝐚𝐝𝐦𝐢𝐧!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['blockadmin'])
 def blockadmin_command(message):
@@ -932,14 +1009,14 @@ def blockadmin_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /blockadmin [user_id] [reason]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /blockadmin [𝐢𝐝] [𝐫𝐞𝐚𝐬𝐨𝐧]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
@@ -947,16 +1024,16 @@ def blockadmin_command(message):
         reason = " ".join(args[2:]) if len(args) > 2 else "Admin blocked"
         
         if target == OWNER_ID:
-            error_msg = bot.reply_to(message, "❌ Cannot block owner!")
-            track_message(user_id, error_msg.message_id)
+            msg = bot.reply_to(message, "❌ 𝐂𝐚𝐧𝐧𝐨𝐭 𝐛𝐥𝐨𝐜𝐤 𝐨𝐰𝐧𝐞𝐫!")
+            track_message(user_id, msg.message_id)
             return
         
         block_admin(target, user_id, reason)
-        success_msg = bot.reply_to(message, f"✅ Admin {target} blocked!\nReason: {reason}")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐀𝐝𝐦𝐢𝐧 `{target}` 𝐛𝐥𝐨𝐜𝐤𝐞𝐝!\n𝐑𝐞𝐚𝐬𝐨𝐧: {reason}", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['setadminlimit'])
 def setadminlimit_command(message):
@@ -966,14 +1043,14 @@ def setadminlimit_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 3:
-        usage_msg = bot.reply_to(message, "Usage: /setadminlimit [admin_id] [limit]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /setadminlimit [𝐚𝐝𝐦𝐢𝐧_𝐢𝐝] [𝐥𝐢𝐦𝐢𝐭]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
@@ -981,16 +1058,16 @@ def setadminlimit_command(message):
         limit = int(args[2])
         
         if target == OWNER_ID:
-            error_msg = bot.reply_to(message, "❌ Cannot set limit for owner!")
-            track_message(user_id, error_msg.message_id)
+            msg = bot.reply_to(message, "❌ 𝐂𝐚𝐧𝐧𝐨𝐭 𝐬𝐞𝐭 𝐥𝐢𝐦𝐢𝐭 𝐟𝐨𝐫 𝐨𝐰𝐧𝐞𝐫!")
+            track_message(user_id, msg.message_id)
             return
         
         set_admin_limit(target, limit)
-        success_msg = bot.reply_to(message, f"✅ Admin {target} limit set to {limit}!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐀𝐝𝐦𝐢𝐧 `{target}` 𝐥𝐢𝐦𝐢𝐭 𝐬𝐞𝐭 𝐭𝐨 {limit}!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid input!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['adminlist'])
 def adminlist_command(message):
@@ -1000,24 +1077,26 @@ def adminlist_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     c.execute("SELECT user_id FROM users WHERE is_admin = 1 OR is_owner = 1")
     admins = c.fetchall()
     
-    msg = "👑 **ADMIN TEAM** 👑\n\n"
+    msg_text = "👑 **𝐀𝐃𝐌𝐈𝐍 𝐓𝐄𝐀𝐌** 👑\n\n"
     markup = InlineKeyboardMarkup()
     
     for (admin_id,) in admins:
-        role = "👑 OWNER" if admin_id == OWNER_ID else "👥 ADMIN"
-        msg += f"{role}: `{admin_id}`\n"
+        role = "👑 𝐎𝐖𝐍𝐄𝐑" if admin_id == OWNER_ID else "👥 𝐀𝐃𝐌𝐈𝐍"
+        msg_text += f"{role}: `{admin_id}`\n"
         if admin_id != OWNER_ID:
-            markup.add(InlineKeyboardButton(f"📩 Message {admin_id}", url=f"tg://user?id={admin_id}"))
+            markup.add(InlineKeyboardButton(f"📩 𝐌𝐞𝐬𝐬𝐚𝐠𝐞 {admin_id}", url=f"tg://user?id={admin_id}"))
     
-    result_msg = bot.reply_to(message, msg, parse_mode="Markdown", reply_markup=markup)
+    result_msg = bot.reply_to(message, msg_text, parse_mode="Markdown", reply_markup=markup)
     track_message(user_id, result_msg.message_id)
+
+# ==================== CREDIT MANAGEMENT COMMANDS ====================
 
 @bot.message_handler(commands=['setuserlimit'])
 def setuserlimit_command(message):
@@ -1027,25 +1106,25 @@ def setuserlimit_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 3:
-        usage_msg = bot.reply_to(message, "Usage: /setuserlimit [user_id] [limit]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /setuserlimit [𝐮𝐬𝐞𝐫_𝐢𝐝] [𝐥𝐢𝐦𝐢𝐭]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         limit = int(args[2])
         set_user_credits(target, limit)
-        success_msg = bot.reply_to(message, f"✅ User {target} limit set to {limit}!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐥𝐢𝐦𝐢𝐭 𝐬𝐞𝐭 𝐭𝐨 {limit}!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid input!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['addcredits'])
 def addcredits_command(message):
@@ -1055,25 +1134,25 @@ def addcredits_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 3:
-        usage_msg = bot.reply_to(message, "Usage: /addcredits [user_id] [amount]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /addcredits [𝐮𝐬𝐞𝐫_𝐢𝐝] [𝐚𝐦𝐨𝐮𝐧𝐭]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         amount = int(args[2])
         add_user_credits(target, amount)
-        success_msg = bot.reply_to(message, f"✅ Added {amount} credits to user {target}!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐀𝐝𝐝𝐞𝐝 {amount} 𝐜𝐫𝐞𝐝𝐢𝐭𝐬 𝐭𝐨 𝐮𝐬𝐞𝐫 `{target}`!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid input!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['removecredits'])
 def removecredits_command(message):
@@ -1083,25 +1162,25 @@ def removecredits_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 3:
-        usage_msg = bot.reply_to(message, "Usage: /removecredits [user_id] [amount]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /removecredits [𝐮𝐬𝐞𝐫_𝐢𝐝] [𝐚𝐦𝐨𝐮𝐧𝐭]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         amount = int(args[2])
         remove_user_credits(target, amount)
-        success_msg = bot.reply_to(message, f"✅ Removed {amount} credits from user {target}!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐑𝐞𝐦𝐨𝐯𝐞𝐝 {amount} 𝐜𝐫𝐞𝐝𝐢𝐭𝐬 𝐟𝐫𝐨𝐦 𝐮𝐬𝐞𝐫 `{target}`!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid input!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['resetcredits'])
 def resetcredits_command(message):
@@ -1111,24 +1190,26 @@ def resetcredits_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /resetcredits [user_id]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /resetcredits [𝐮𝐬𝐞𝐫_𝐢𝐝]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         reset_user_credits(target)
-        success_msg = bot.reply_to(message, f"✅ User {target} credits reset to {FREE_CREDITS}!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐜𝐫𝐞𝐝𝐢𝐭𝐬 𝐫𝐞𝐬𝐞𝐭 𝐭𝐨 {FREE_CREDITS}!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐮𝐬𝐞𝐫 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
+
+# ==================== BATCH MANAGEMENT COMMANDS ====================
 
 @bot.message_handler(commands=['givepremium'])
 def givepremium_command(message):
@@ -1138,24 +1219,24 @@ def givepremium_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /givepremium [user_id]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /givepremium [𝐮𝐬𝐞𝐫_𝐢𝐝]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         set_user_batch(target, 'premium')
-        success_msg = bot.reply_to(message, f"✅ User {target} is now PREMIUM!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨𝐰 𝐏𝐑𝐄𝐌𝐈𝐔𝐌!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐮𝐬𝐞𝐫 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['givestar'])
 def givestar_command(message):
@@ -1165,24 +1246,26 @@ def givestar_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split()
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /givestar [user_id]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /givestar [𝐮𝐬𝐞𝐫_𝐢𝐝]")
+        track_message(user_id, msg.message_id)
         return
     
     try:
         target = int(args[1])
         set_user_batch(target, 'star')
-        success_msg = bot.reply_to(message, f"✅ User {target} is now STAR!")
-        track_message(user_id, success_msg.message_id)
+        msg = bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨𝐰 𝐒𝐓𝐀𝐑!", parse_mode="Markdown")
+        track_message(user_id, msg.message_id)
     except:
-        error_msg = bot.reply_to(message, "❌ Invalid user ID!")
-        track_message(user_id, error_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐮𝐬𝐞𝐫 𝐈𝐃!")
+        track_message(user_id, msg.message_id)
+
+# ==================== LISTS COMMANDS ====================
 
 @bot.message_handler(commands=['memberlist'])
 def memberlist_command(message):
@@ -1192,8 +1275,8 @@ def memberlist_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     c.execute("SELECT COUNT(*) FROM users")
@@ -1202,13 +1285,13 @@ def memberlist_command(message):
     c.execute("SELECT user_id, batch_type, is_banned FROM users ORDER BY joined_date DESC LIMIT 20")
     members = c.fetchall()
     
-    msg = f"📋 **MEMBER LIST** (Last 20)\nTotal Members: {total}\n\n"
+    msg_text = f"📋 **𝐌𝐄𝐌𝐁𝐄𝐑 𝐋𝐈𝐒𝐓** (𝐋𝐚𝐬𝐭 20)\n𝐓𝐨𝐭𝐚𝐥: {total}\n\n"
     for mid, batch, banned in members:
         emoji = "👑" if mid == OWNER_ID else "🔥" if batch == 'admin' else "⭐" if batch == 'star' else "💎" if batch == 'premium' else "👤"
         ban_emoji = "🔴" if banned else "🟢"
-        msg += f"{ban_emoji} {emoji} `{mid}` - {batch}\n"
+        msg_text += f"{ban_emoji} {emoji} `{mid}` - {batch}\n"
     
-    result_msg = bot.reply_to(message, msg, parse_mode="Markdown")
+    result_msg = bot.reply_to(message, msg_text, parse_mode="Markdown")
     track_message(user_id, result_msg.message_id)
 
 @bot.message_handler(commands=['premiumlist'])
@@ -1219,23 +1302,23 @@ def premiumlist_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     c.execute("SELECT user_id FROM users WHERE batch_type IN ('premium', 'star', 'admin', 'owner')")
     premium = c.fetchall()
     
     if not premium:
-        no_msg = bot.reply_to(message, "📝 No premium members!")
-        track_message(user_id, no_msg.message_id)
+        msg = bot.reply_to(message, "📝 𝐍𝐨 𝐩𝐫𝐞𝐦𝐢𝐮𝐦 𝐦𝐞𝐦𝐛𝐞𝐫𝐬!")
+        track_message(user_id, msg.message_id)
         return
     
-    msg = "💎 **PREMIUM MEMBERS** 💎\n\n"
+    msg_text = "💎 **𝐏𝐑𝐄𝐌𝐈𝐔𝐌 𝐌𝐄𝐌𝐁𝐄𝐑𝐒** 💎\n\n"
     for (pid,) in premium[:20]:
-        msg += f"• `{pid}`\n"
+        msg_text += f"• `{pid}`\n"
     
-    result_msg = bot.reply_to(message, msg, parse_mode="Markdown")
+    result_msg = bot.reply_to(message, msg_text, parse_mode="Markdown")
     track_message(user_id, result_msg.message_id)
 
 @bot.message_handler(commands=['banlist'])
@@ -1246,24 +1329,26 @@ def banlist_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     c.execute("SELECT user_id, ban_reason, ban_date FROM banned_users")
     banned = c.fetchall()
     
     if not banned:
-        no_msg = bot.reply_to(message, "📝 No banned users!")
-        track_message(user_id, no_msg.message_id)
+        msg = bot.reply_to(message, "📝 𝐍𝐨 𝐛𝐚𝐧𝐧𝐞𝐝 𝐮𝐬𝐞𝐫𝐬!")
+        track_message(user_id, msg.message_id)
         return
     
-    msg = "🔨 **BANNED USERS** 🔨\n\n"
+    msg_text = "🔨 **𝐁𝐀𝐍𝐍𝐄𝐃 𝐔𝐒𝐄𝐑𝐒** 🔨\n\n"
     for bid, reason, date in banned:
-        msg += f"• `{bid}` - {reason}\n  📅 {date[:10]}\n\n"
+        msg_text += f"• `{bid}` - {reason}\n  📅 {date[:10]}\n\n"
     
-    result_msg = bot.reply_to(message, msg, parse_mode="Markdown")
+    result_msg = bot.reply_to(message, msg_text, parse_mode="Markdown")
     track_message(user_id, result_msg.message_id)
+
+# ==================== BOT SETTINGS COMMANDS ====================
 
 @bot.message_handler(commands=['boton'])
 def boton_command(message):
@@ -1273,13 +1358,13 @@ def boton_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     update_setting('bot_active', 'true', user_id)
-    success_msg = bot.reply_to(message, "🟢 **Bot is now ON!**", parse_mode="Markdown")
-    track_message(user_id, success_msg.message_id)
+    msg = bot.reply_to(message, "🟢 **𝐁𝐨𝐭 𝐢𝐬 𝐧𝐨𝐰 𝐎𝐍!**", parse_mode="Markdown")
+    track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['botoff'])
 def botoff_command(message):
@@ -1289,13 +1374,13 @@ def botoff_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     update_setting('bot_active', 'false', user_id)
-    success_msg = bot.reply_to(message, "🔴 **Bot is now OFF!**", parse_mode="Markdown")
-    track_message(user_id, success_msg.message_id)
+    msg = bot.reply_to(message, "🔴 **𝐁𝐨𝐭 𝐢𝐬 𝐧𝐨𝐰 𝐎𝐅𝐅!**", parse_mode="Markdown")
+    track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['maintenance'])
 def maintenance_command(message):
@@ -1305,17 +1390,17 @@ def maintenance_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     current = get_setting('maintenance')
     new_value = 'false' if current == 'true' else 'true'
     update_setting('maintenance', new_value, user_id)
     
-    status = "ON" if new_value == 'true' else "OFF"
-    success_msg = bot.reply_to(message, f"🛠️ **Maintenance mode is now {status}!**", parse_mode="Markdown")
-    track_message(user_id, success_msg.message_id)
+    status = "𝐎𝐍" if new_value == 'true' else "𝐎𝐅𝐅"
+    msg = bot.reply_to(message, f"🛠️ **𝐌𝐚𝐢𝐧𝐭𝐞𝐧𝐚𝐧𝐜𝐞 𝐦𝐨𝐝𝐞 𝐢𝐬 𝐧𝐨𝐰 {status}!**", parse_mode="Markdown")
+    track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['togglejoin'])
 def togglejoin_command(message):
@@ -1325,17 +1410,17 @@ def togglejoin_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     current = get_setting('join_check')
     new_value = 'false' if current == 'true' else 'true'
     update_setting('join_check', new_value, user_id)
     
-    status = "OFF" if new_value == 'false' else "ON"
-    success_msg = bot.reply_to(message, f"🔒 **Join check is now {status}!**", parse_mode="Markdown")
-    track_message(user_id, success_msg.message_id)
+    status = "𝐎𝐅𝐅" if new_value == 'false' else "𝐎𝐍"
+    msg = bot.reply_to(message, f"🔒 **𝐉𝐨𝐢𝐧 𝐜𝐡𝐞𝐜𝐤 𝐢𝐬 𝐧𝐨𝐰 {status}!**", parse_mode="Markdown")
+    track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['togglecredits'])
 def togglecredits_command(message):
@@ -1345,17 +1430,17 @@ def togglecredits_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     current = get_setting('credit_system')
     new_value = 'false' if current == 'true' else 'true'
     update_setting('credit_system', new_value, user_id)
     
-    status = "OFF" if new_value == 'false' else "ON"
-    success_msg = bot.reply_to(message, f"💰 **Credit system is now {status}!**", parse_mode="Markdown")
-    track_message(user_id, success_msg.message_id)
+    status = "𝐎𝐅𝐅" if new_value == 'false' else "𝐎𝐍"
+    msg = bot.reply_to(message, f"💰 **𝐂𝐫𝐞𝐝𝐢𝐭 𝐬𝐲𝐬𝐭𝐞𝐦 𝐢𝐬 𝐧𝐨𝐰 {status}!**", parse_mode="Markdown")
+    track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['settings'])
 def settings_command(message):
@@ -1365,8 +1450,8 @@ def settings_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if not is_admin_user(user_id):
-        deny_msg = bot.reply_to(message, "❌ Admin only command!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        track_message(user_id, msg.message_id)
         return
     
     bot_active = get_setting('bot_active')
@@ -1374,17 +1459,17 @@ def settings_command(message):
     join_check = get_setting('join_check')
     credit_system = get_setting('credit_system')
     
-    msg = f"""
-⚙️ **BOT SETTINGS**
+    msg_text = f"""
+⚙️ **𝐁𝐎𝐓 𝐒𝐄𝐓𝐓𝐈𝐍𝐆𝐒**
 ━━━━━━━━━━━━━━━━
-🟢 Bot Active: {'YES' if bot_active == 'true' else 'NO'}
-🛠️ Maintenance: {'YES' if maintenance == 'true' else 'NO'}
-🔒 Join Check: {'YES' if join_check == 'true' else 'NO'}
-💰 Credit System: {'YES' if credit_system == 'true' else 'NO'}
+🟢 𝐁𝐨𝐭 𝐀𝐜𝐭𝐢𝐯𝐞: {'𝐘𝐄𝐒' if bot_active == 'true' else '𝐍𝐎'}
+🛠️ 𝐌𝐚𝐢𝐧𝐭𝐞𝐧𝐚𝐧𝐜𝐞: {'𝐘𝐄𝐒' if maintenance == 'true' else '𝐍𝐎'}
+🔒 𝐉𝐨𝐢𝐧 𝐂𝐡𝐞𝐜𝐤: {'𝐘𝐄𝐒' if join_check == 'true' else '𝐍𝐎'}
+💰 𝐂𝐫𝐞𝐝𝐢𝐭 𝐒𝐲𝐬𝐭𝐞𝐦: {'𝐘𝐄𝐒' if credit_system == 'true' else '𝐍𝐎'}
 
-👑 Owner: {OWNER_ID}
+👑 𝐎𝐰𝐧𝐞𝐫: {OWNER_ID}
 """
-    result_msg = bot.reply_to(message, msg, parse_mode="Markdown")
+    result_msg = bot.reply_to(message, msg_text, parse_mode="Markdown")
     track_message(user_id, result_msg.message_id)
 
 # ==================== OWNER ONLY COMMANDS ====================
@@ -1397,14 +1482,14 @@ def broadcast_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if user_id != OWNER_ID:
-        deny_msg = bot.reply_to(message, "❌ Only owner can use this!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐎𝐧𝐥𝐲 𝐨𝐰𝐧𝐞𝐫 𝐜𝐚𝐧 𝐮𝐬𝐞 𝐭𝐡𝐢𝐬!")
+        track_message(user_id, msg.message_id)
         return
     
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        usage_msg = bot.reply_to(message, "Usage: /broadcast [message]")
-        track_message(user_id, usage_msg.message_id)
+        msg = bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /broadcast [𝐦𝐞𝐬𝐬𝐚𝐠𝐞]")
+        track_message(user_id, msg.message_id)
         return
     
     broadcast_msg = args[1]
@@ -1414,14 +1499,14 @@ def broadcast_command(message):
     sent = 0
     for (uid,) in users:
         try:
-            bot.send_message(uid, f"📢 **BROADCAST**\n\n{broadcast_msg}\n\n{BRAND}", parse_mode="Markdown")
+            bot.send_message(uid, f"📢 **𝐁𝐑𝐎𝐀𝐃𝐂𝐀𝐒𝐓**\n\n{broadcast_msg}\n\n{BRAND}", parse_mode="Markdown")
             sent += 1
             time.sleep(0.05)
         except:
             continue
     
-    success_msg = bot.reply_to(message, f"✅ Broadcast sent to {sent} users!")
-    track_message(user_id, success_msg.message_id)
+    msg = bot.reply_to(message, f"✅ 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 𝐬𝐞𝐧𝐭 𝐭𝐨 {sent} 𝐮𝐬𝐞𝐫𝐬!")
+    track_message(user_id, msg.message_id)
 
 @bot.message_handler(commands=['stats'])
 def stats_command(message):
@@ -1431,8 +1516,8 @@ def stats_command(message):
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
     if user_id != OWNER_ID:
-        deny_msg = bot.reply_to(message, "❌ Only owner can use this!")
-        track_message(user_id, deny_msg.message_id)
+        msg = bot.reply_to(message, "❌ 𝐎𝐧𝐥𝐲 𝐨𝐰𝐧𝐞𝐫 𝐜𝐚𝐧 𝐮𝐬𝐞 𝐭𝐡𝐢𝐬!")
+        track_message(user_id, msg.message_id)
         return
     
     c.execute("SELECT COUNT(*) FROM users")
@@ -1447,15 +1532,15 @@ def stats_command(message):
     c.execute("SELECT SUM(credits_used) FROM users")
     total_commands = c.fetchone()[0] or 0
     
-    msg = f"""
-📊 **BOT STATISTICS**
+    msg_text = f"""
+📊 **𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐈𝐒𝐓𝐈𝐂𝐒**
 ━━━━━━━━━━━━━━━━
-👥 Total Users: {total_users}
-👑 Total Admins: {total_admins}
-🔴 Banned Users: {total_banned}
-📊 Commands Used: {total_commands}
+👥 𝐓𝐨𝐭𝐚𝐥 𝐔𝐬𝐞𝐫𝐬: {total_users}
+👑 𝐓𝐨𝐭𝐚𝐥 𝐀𝐝𝐦𝐢𝐧𝐬: {total_admins}
+🔴 𝐁𝐚𝐧𝐧𝐞𝐝 𝐔𝐬𝐞𝐫𝐬: {total_banned}
+📊 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬 𝐔𝐬𝐞𝐝: {total_commands}
 """
-    result_msg = bot.reply_to(message, msg, parse_mode="Markdown")
+    result_msg = bot.reply_to(message, msg_text, parse_mode="Markdown")
     track_message(user_id, result_msg.message_id)
 
 # ==================== ERROR HANDLER ====================
@@ -1466,7 +1551,7 @@ def handle_all(message):
     
     cleanup_previous_messages(chat_id, user_id, message.message_id)
     
-    error_msg = bot.reply_to(message, f"❌ Invalid Command!\n\nUse /help\n\n{BRAND}", parse_mode="Markdown")
+    error_msg = bot.reply_to(message, f"❌ /help", parse_mode="Markdown")
     track_message(user_id, error_msg.message_id)
 
 # ==================== FLASK APP ====================
@@ -1487,10 +1572,9 @@ def run_flask():
 
 # ==================== START BOT ====================
 def run_bot():
-    print("🚀 Tatsumaki Bot starting...")
+    print("🚀 Tatsumaki Bot Starting...")
     print(f"👑 {BRAND}")
     print(f"👑 Owner ID: {OWNER_ID}")
-    print(f"📊 Total Commands: {len(API_COMMANDS)} APIs + Admin Commands")
     print("=" * 30)
     
     try:
@@ -1501,10 +1585,10 @@ def run_bot():
     
     while True:
         try:
-            bot.infinity_polling(timeout=60)
+            bot.infinity_polling(timeout=30)
         except Exception as e:
             print(f"❌ Error: {e}")
-            time.sleep(5)
+            time.sleep(2)
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask)
