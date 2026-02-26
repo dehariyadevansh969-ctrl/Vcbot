@@ -38,7 +38,7 @@ OWNER_ID = 8066199853
 FREE_CREDITS = 2
 REFERRAL_BONUS = 2
 REFERRALS_NEEDED = 5
-API_TIMEOUT = 3  # 3 seconds exact timeout
+API_TIMEOUT = 5  # 3 seconds exact timeout
 
 # ==================== ULTRA FAST OPTIMIZATIONS ====================
 executor = ThreadPoolExecutor(max_workers=20)
