@@ -8,104 +8,96 @@ import threading
 from flask import Flask, jsonify
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = os.environ.get('BOT_TOKEN', "8725679605:AAEODqV2bxuSv5pVNMO7prDdGOpjLmcNLrg")
 
-# ===== APNI API CONFIG =====
-API_BASE_URL = "https://apple-apixdev.onrender.com/api"
-API_KEY = "DevKing77"
+# 🔑 BOT TOKEN
+BOT_TOKEN = os.environ.get('BOT_TOKEN', "8623049096:AAEOwMuKZMibgWBEeMisPgmM0-IFSTaA21w")
 
-# GROUP & CHANNEL
+# 🖼️ START IMAGE
+START_IMAGE = "https://drive.google.com/uc?export=download&id=1u8u0poNZAOlR8KFI-aCSwuP82AcXFmVM"
+
+# 🤖 BOT NAME
+BOT_NAME = "NIGHTMARE™"
+
+# 👑 BRAND NAME
+BRAND = "💠⃟I𝕯єν 🖤࿐"
+
+# ==================== API CONFIGURATION ====================
+API_BASE_URL = "https://shivam-ultra-api.onrender.com/api"
+API_KEY = "SHIVAM-786"
+API_TIMEOUT = 6  # ⏱️ 6 seconds timeout
+
+# ==================== 3 CHANNELS CONFIG ====================
 GROUP_LINK = "https://t.me/+3I9rJfeh5XVkZDM1"
 GROUP_ID = -1003758601788
 CHANNEL_LINK = "https://t.me/+1Jqq3-0RKpEyNTM1"
 CHANNEL_ID = -1003791928633
-
-# IMAGE & VIDEO
-START_IMAGE = "https://i.ibb.co/LjY2dHQ/Picsart-26-02-23-10-49-39-278.jpg"
-WELCOME_VIDEO = "https://drive.google.com/uc?export=download&id=1FBbOYsTzDF5gN170A-pDAn3jGb2IcVNi"
-
-# BRAND
-BRAND = "꧁💠⃟‌⃟ 𝕯єν꧂"
-CREATOR = "Dev"
+CHANNEL3_LINK = "https://t.me/teeamend"
+CHANNEL3_ID = -1003704625256
 
 # ===== OWNER CONFIG =====
 OWNER_ID = 8066199853
 
-# ===== BOT CONFIG =====
-FREE_CREDITS = 2
-REFERRAL_BONUS = 2
-REFERRALS_NEEDED = 5
-API_TIMEOUT = 5  # 3 seconds exact timeout
+# ==================== API COMMANDS LIST ====================
+API_COMMANDS = {
+    'numinfo': {'name': '📱 Phone', 'desc': 'Phone number details', 'example': '9876543210'},
+    'aadhar': {'name': '🆔 Aadhar', 'desc': 'Aadhar card details', 'example': '123456789012'},
+    'insta': {'name': '📸 Instagram', 'desc': 'Instagram account info', 'example': 'virat.kohli'},
+    'rto': {'name': '🚗 RTO', 'desc': 'Vehicle RTO details', 'example': 'MP09AB1234'},
+    'ffuid': {'name': '🎮 Free Fire', 'desc': 'Free Fire UID details', 'example': '123456789'},
+    'tg': {'name': '💬 Telegram', 'desc': 'Telegram account info', 'example': '6722541415'},
+    'family': {'name': '👨‍👩‍👧 Family', 'desc': 'Family details', 'example': '30985035'}
+}
 
-# ==================== ULTRA FAST OPTIMIZATIONS ====================
-executor = ThreadPoolExecutor(max_workers=20)
-api_cache = {}
-CACHE_TIME = 5  # Short cache
-db_cache = {}
-DB_CACHE_TIME = 30
-
-# Pre-loaded settings
-bot_active_cache = "true"
-maintenance_cache = "false"
-join_check_cache = "true"
-credit_system_cache = "true"
-last_settings_update = time.time()
+# Temporary storage for user inputs
+user_input_state = {}
 
 # ==================== DATABASE SETUP ====================
-db_path = '/tmp/bot_database.db'
+current_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
+db_path = os.path.join(current_dir, 'bot_database.db')
+
 conn = sqlite3.connect(db_path, check_same_thread=False)
 c = conn.cursor()
 
-# Users table
-c.execute('''CREATE TABLE IF NOT EXISTS users
-             (user_id INTEGER PRIMARY KEY,
-              username TEXT,
-              verified INTEGER DEFAULT 0,
-              is_admin INTEGER DEFAULT 0,
-              is_owner INTEGER DEFAULT 0,
-              is_banned INTEGER DEFAULT 0,
-              credits_used INTEGER DEFAULT 0,
-              total_credits INTEGER DEFAULT 2,
-              referrals_count INTEGER DEFAULT 0,
-              batch_type TEXT DEFAULT 'free',
-              joined_date TEXT)''')
-
-# Referrals table
-c.execute('''CREATE TABLE IF NOT EXISTS referrals
-             (referrer_id INTEGER,
-              referred_id INTEGER,
-              referred_date TEXT,
-              PRIMARY KEY (referrer_id, referred_id))''')
+# Users table with referral system
+c.execute('''CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY, 
+    username TEXT, 
+    verified INTEGER DEFAULT 0, 
+    is_admin INTEGER DEFAULT 0, 
+    is_owner INTEGER DEFAULT 0, 
+    is_banned INTEGER DEFAULT 0,
+    joined_date TEXT,
+    total_commands INTEGER DEFAULT 0,
+    referred_by INTEGER DEFAULT 0,
+    referrals INTEGER DEFAULT 0
+)''')
 
 # Banned users table
-c.execute('''CREATE TABLE IF NOT EXISTS banned_users
-             (user_id INTEGER PRIMARY KEY,
-              banned_by INTEGER,
-              ban_reason TEXT,
-              ban_date TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS banned_users (
+    user_id INTEGER PRIMARY KEY, 
+    banned_by INTEGER, 
+    ban_reason TEXT, 
+    ban_date TEXT
+)''')
 
 # Bot settings table
-c.execute('''CREATE TABLE IF NOT EXISTS bot_settings
-             (setting_name TEXT PRIMARY KEY,
-              setting_value TEXT,
-              changed_by INTEGER,
-              changed_date TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS bot_settings (
+    setting_name TEXT PRIMARY KEY, 
+    setting_value TEXT, 
+    changed_by INTEGER, 
+    changed_date TEXT
+)''')
 
 # Insert default settings
 c.execute("INSERT OR IGNORE INTO bot_settings VALUES ('bot_active', 'true', ?, ?)", (OWNER_ID, datetime.now()))
-c.execute("INSERT OR IGNORE INTO bot_settings VALUES ('maintenance', 'false', ?, ?)", (OWNER_ID, datetime.now()))
 c.execute("INSERT OR IGNORE INTO bot_settings VALUES ('join_check', 'true', ?, ?)", (OWNER_ID, datetime.now()))
-c.execute("INSERT OR IGNORE INTO bot_settings VALUES ('credit_system', 'true', ?, ?)", (OWNER_ID, datetime.now()))
-
 conn.commit()
 
-# ==================== FAST DATABASE FUNCTIONS ====================
-
+# ==================== DATABASE FUNCTIONS ====================
 def ensure_owner_in_db():
-    c.execute("INSERT OR REPLACE INTO users (user_id, is_owner, is_admin, verified, total_credits, batch_type, joined_date) VALUES (?, 1, 1, 1, 999999, 'owner', ?)",
+    c.execute("INSERT OR REPLACE INTO users (user_id, is_owner, is_admin, verified, joined_date) VALUES (?, 1, 1, 1, ?)",
               (OWNER_ID, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
 
@@ -114,1232 +106,753 @@ ensure_owner_in_db()
 def is_admin_user(user_id):
     if user_id == OWNER_ID:
         return True
-    cache_key = f"admin_{user_id}"
-    if cache_key in db_cache:
-        return db_cache[cache_key]
     c.execute("SELECT is_admin FROM users WHERE user_id = ?", (user_id,))
     result = c.fetchone()
-    value = result and result[0] == 1
-    db_cache[cache_key] = value
-    return value
+    return result and result[0] == 1
 
 def is_user_banned(user_id):
-    cache_key = f"banned_{user_id}"
-    if cache_key in db_cache:
-        return db_cache[cache_key]
     c.execute("SELECT * FROM banned_users WHERE user_id = ?", (user_id,))
-    value = c.fetchone() is not None
-    db_cache[cache_key] = value
-    return value
+    return c.fetchone() is not None
 
 def get_setting(setting_name):
-    global bot_active_cache, maintenance_cache, join_check_cache, credit_system_cache, last_settings_update
-    
-    if time.time() - last_settings_update > 30:
-        c.execute("SELECT setting_value FROM bot_settings WHERE setting_name = 'bot_active'")
-        bot_active_cache = c.fetchone()[0]
-        c.execute("SELECT setting_value FROM bot_settings WHERE setting_name = 'maintenance'")
-        maintenance_cache = c.fetchone()[0]
-        c.execute("SELECT setting_value FROM bot_settings WHERE setting_name = 'join_check'")
-        join_check_cache = c.fetchone()[0]
-        c.execute("SELECT setting_value FROM bot_settings WHERE setting_name = 'credit_system'")
-        credit_system_cache = c.fetchone()[0]
-        last_settings_update = time.time()
-    
-    if setting_name == 'bot_active':
-        return bot_active_cache
-    elif setting_name == 'maintenance':
-        return maintenance_cache
-    elif setting_name == 'join_check':
-        return join_check_cache
-    elif setting_name == 'credit_system':
-        return credit_system_cache
-    return 'true'
-
-def update_setting(setting_name, value, changed_by):
-    global bot_active_cache, maintenance_cache, join_check_cache, credit_system_cache, last_settings_update
-    c.execute("UPDATE bot_settings SET setting_value = ?, changed_by = ?, changed_date = ? WHERE setting_name = ?",
-              (value, changed_by, datetime.now(), setting_name))
-    conn.commit()
-    if setting_name == 'bot_active':
-        bot_active_cache = value
-    elif setting_name == 'maintenance':
-        maintenance_cache = value
-    elif setting_name == 'join_check':
-        join_check_cache = value
-    elif setting_name == 'credit_system':
-        credit_system_cache = value
-    last_settings_update = time.time()
-
-def get_user_credits(user_id):
-    if is_user_banned(user_id):
-        return {'used': 0, 'total': 0, 'left': 0, 'referrals': 0, 'batch': 'banned'}
-    
-    cache_key = f"credits_{user_id}"
-    if cache_key in db_cache:
-        return db_cache[cache_key]
-    
-    c.execute("SELECT credits_used, total_credits, referrals_count, batch_type FROM users WHERE user_id = ?", (user_id,))
+    c.execute("SELECT setting_value FROM bot_settings WHERE setting_name = ?", (setting_name,))
     result = c.fetchone()
-    
-    if result:
-        used, total, referrals, batch = result
-        value = {
-            'used': used,
-            'total': total,
-            'left': total - used,
-            'referrals': referrals,
-            'batch': batch
-        }
-        db_cache[cache_key] = value
-        return value
-    else:
-        c.execute("INSERT INTO users (user_id, total_credits, joined_date) VALUES (?, ?, ?)",
-                 (user_id, FREE_CREDITS, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        value = {'used': 0, 'total': FREE_CREDITS, 'left': FREE_CREDITS, 'referrals': 0, 'batch': 'free'}
-        db_cache[cache_key] = value
-        return value
-
-def use_credit(user_id):
-    if user_id == OWNER_ID or is_admin_user(user_id):
-        return True
-    if is_user_banned(user_id):
-        return False
-    if credit_system_cache == 'false':
-        return True
-    credits = get_user_credits(user_id)
-    if credits['left'] > 0:
-        c.execute("UPDATE users SET credits_used = credits_used + 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
-        db_cache.pop(f"credits_{user_id}", None)
-        return True
-    return False
-
-def add_referral(referrer_id, referred_id):
-    c.execute("SELECT * FROM referrals WHERE referrer_id = ? AND referred_id = ?", (referrer_id, referred_id))
-    if c.fetchone():
-        return False
-    c.execute("INSERT INTO referrals VALUES (?, ?, ?)",
-             (referrer_id, referred_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    c.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
-    c.execute("SELECT referrals_count FROM users WHERE user_id = ?", (referrer_id,))
-    count = c.fetchone()[0]
-    db_cache.pop(f"credits_{referrer_id}", None)
-    if count % REFERRALS_NEEDED == 0:
-        c.execute("UPDATE users SET total_credits = total_credits + ? WHERE user_id = ?", (REFERRAL_BONUS, referrer_id))
-        conn.commit()
-        return True
-    else:
-        conn.commit()
-        return False
-
-def set_user_credits(user_id, amount):
-    c.execute("UPDATE users SET total_credits = ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-    db_cache.pop(f"credits_{user_id}", None)
-
-def add_user_credits(user_id, amount):
-    c.execute("UPDATE users SET total_credits = total_credits + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-    db_cache.pop(f"credits_{user_id}", None)
-
-def remove_user_credits(user_id, amount):
-    c.execute("UPDATE users SET total_credits = total_credits - ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-    db_cache.pop(f"credits_{user_id}", None)
-
-def reset_user_credits(user_id):
-    c.execute("UPDATE users SET credits_used = 0, total_credits = ? WHERE user_id = ?", (FREE_CREDITS, user_id))
-    conn.commit()
-    db_cache.pop(f"credits_{user_id}", None)
-
-def set_user_batch(user_id, batch_type):
-    c.execute("UPDATE users SET batch_type = ? WHERE user_id = ?", (batch_type, user_id))
-    if batch_type == 'premium':
-        c.execute("UPDATE users SET total_credits = 50 WHERE user_id = ?", (user_id,))
-    elif batch_type == 'star':
-        c.execute("UPDATE users SET total_credits = 100 WHERE user_id = ?", (user_id,))
-    elif batch_type == 'admin':
-        c.execute("UPDATE users SET total_credits = 999999, is_admin = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    db_cache.pop(f"credits_{user_id}", None)
-    db_cache.pop(f"admin_{user_id}", None)
-
-def add_admin(user_id):
-    set_user_batch(user_id, 'admin')
-
-def remove_admin(user_id):
-    if user_id != OWNER_ID:
-        c.execute("UPDATE users SET is_admin = 0, batch_type = 'free', total_credits = ? WHERE user_id = ?", (FREE_CREDITS, user_id))
-        conn.commit()
-        db_cache.pop(f"admin_{user_id}", None)
-        db_cache.pop(f"credits_{user_id}", None)
-
-def block_admin(user_id, blocked_by, reason="No reason"):
-    if user_id != OWNER_ID:
-        c.execute("UPDATE users SET is_admin = 0, is_banned = 1, batch_type = 'banned' WHERE user_id = ?", (user_id,))
-        c.execute("INSERT OR REPLACE INTO banned_users VALUES (?, ?, ?, ?)",
-                  (user_id, blocked_by, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        db_cache.pop(f"admin_{user_id}", None)
-        db_cache.pop(f"banned_{user_id}", None)
-        db_cache.pop(f"credits_{user_id}", None)
-
-def set_admin_limit(user_id, limit):
-    if user_id != OWNER_ID:
-        c.execute("UPDATE users SET total_credits = ? WHERE user_id = ?", (limit, user_id))
-        conn.commit()
-        db_cache.pop(f"credits_{user_id}", None)
-
-def ban_user(user_id, banned_by, reason="No reason"):
-    c.execute("INSERT OR REPLACE INTO banned_users VALUES (?, ?, ?, ?)",
-              (user_id, banned_by, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    c.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    db_cache.pop(f"banned_{user_id}", None)
-    db_cache.pop(f"credits_{user_id}", None)
-
-def unban_user(user_id):
-    c.execute("DELETE FROM banned_users WHERE user_id = ?", (user_id,))
-    c.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    db_cache.pop(f"banned_{user_id}", None)
-    db_cache.pop(f"credits_{user_id}", None)
-
-# ==================== BOT INIT ====================
-bot = telebot.TeleBot(BOT_TOKEN)
-
-# Track verification state
-user_verified_state = {}
-user_last_messages = {}
-
-def track_message(user_id, message_id):
-    pass  # No tracking needed
-
-# ==================== CHECK MEMBERSHIP ====================
-def check_membership(user_id):
-    if join_check_cache == 'false':
-        return True
-    try:
-        def check_group():
-            try:
-                return bot.get_chat_member(GROUP_ID, user_id).status in ['member', 'administrator', 'creator']
-            except:
-                return False
-        def check_channel():
-            try:
-                return bot.get_chat_member(CHANNEL_ID, user_id).status in ['member', 'administrator', 'creator']
-            except:
-                return False
-        future_group = executor.submit(check_group)
-        future_channel = executor.submit(check_channel)
-        group_ok = future_group.result(timeout=1)
-        channel_ok = future_channel.result(timeout=1)
-        return group_ok and channel_ok
-    except:
-        return False
+    return result[0] if result else 'true'
 
 def is_user_verified(user_id):
-    if user_id in user_verified_state:
-        return user_verified_state[user_id]
     c.execute("SELECT verified FROM users WHERE user_id = ?", (user_id,))
     result = c.fetchone()
-    value = result and result[0] == 1
-    user_verified_state[user_id] = value
-    return value
+    return result and result[0] == 1
 
 def mark_user_verified(user_id):
     c.execute("UPDATE users SET verified = 1 WHERE user_id = ?", (user_id,))
     conn.commit()
-    user_verified_state[user_id] = True
 
-# ==================== API FUNCTION - 3 SECOND TIMEOUT + RAW DATA ====================
-def fetch_data(endpoint, query):
+def increment_user_commands(user_id):
+    c.execute("UPDATE users SET total_commands = total_commands + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def add_referral(user_id, referrer_id):
+    # Check if already referred
+    c.execute("SELECT referred_by FROM users WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    if result and result[0] == 0:
+        # Update referred_by
+        c.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (referrer_id, user_id))
+        # Increment referrer's referral count
+        c.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id = ?", (referrer_id,))
+        conn.commit()
+        return True
+    return False
+
+def get_user_stats(user_id):
+    c.execute("SELECT verified, is_admin, is_owner, joined_date, total_commands, referrals, referred_by FROM users WHERE user_id = ?", (user_id,))
+    return c.fetchone()
+
+# ==================== BOT INIT ====================
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# ==================== CHECK MEMBERSHIP ====================
+def check_membership(user_id):
+    if get_setting('join_check') == 'false':
+        return True
+    
     try:
-        url = f"{API_BASE_URL}/{endpoint}?key={API_KEY}&num={query}"
-        print(f"Fetching: {url}")
+        group_ok = bot.get_chat_member(GROUP_ID, user_id).status in ['member', 'administrator', 'creator']
+        channel_ok = bot.get_chat_member(CHANNEL_ID, user_id).status in ['member', 'administrator', 'creator']
+        channel3_ok = bot.get_chat_member(CHANNEL3_ID, user_id).status in ['member', 'administrator', 'creator']
+        return group_ok and channel_ok and channel3_ok
+    except:
+        return False
+
+def get_missing_channels(user_id):
+    missing = []
+    try:
+        if not bot.get_chat_member(GROUP_ID, user_id).status in ['member', 'administrator', 'creator']:
+            missing.append("📢 Group")
+    except:
+        missing.append("📢 Group")
+    
+    try:
+        if not bot.get_chat_member(CHANNEL_ID, user_id).status in ['member', 'administrator', 'creator']:
+            missing.append("📣 Channel 1")
+    except:
+        missing.append("📣 Channel 1")
+    
+    try:
+        if not bot.get_chat_member(CHANNEL3_ID, user_id).status in ['member', 'administrator', 'creator']:
+            missing.append("📢 Personal Channel")
+    except:
+        missing.append("📢 Personal Channel")
+    
+    return missing
+
+# ==================== API FUNCTION - 6 SECOND TIMEOUT ====================
+def fetch_api_data(endpoint, query):
+    try:
+        query = str(query).strip()
         
-        # Exactly 3 second timeout
+        # Handle different parameter names
+        if endpoint in ['tg', 'family']:
+            url = f"{API_BASE_URL}/{endpoint}?key={API_KEY}&id={query}"
+        else:
+            url = f"{API_BASE_URL}/{endpoint}?key={API_KEY}&num={query}"
+        
+        print(f"🌐 API Call: {url}")
+        
+        # ⏱️ 6 second timeout
         response = requests.get(url, timeout=API_TIMEOUT)
         
-        if response.status_code != 200:
-            return f"**{BRAND}**\n\n❌ **HTTP {response.status_code}**"
-        
-        # RAW DATA - exactly as received, no filtering
-        try:
-            data = response.json()
-            # Just pretty print, no filtering
-            formatted = json.dumps(data, indent=2, ensure_ascii=False)
-            return f"**{BRAND}**\n\n```json\n{formatted}\n```"
-        except:
-            # If not JSON, return raw text
-            return f"**{BRAND}**\n\n```\n{response.text}\n```"
-        
-    except requests.exceptions.Timeout:
-        return f"**{BRAND}**\n\n❌ **Timeout after {API_TIMEOUT}s**"
-    except requests.exceptions.ConnectionError:
-        return f"**{BRAND}**\n\n❌ **Connection Error**"
-    except Exception as e:
-        return f"**{BRAND}**\n\n❌ **Error**"
-
-# ==================== API COMMANDS LIST ====================
-API_COMMANDS = {
-    'num': '📱 Phone Number',
-    'insta': '📸 Instagram',
-    'rto': '🚗 RTO Details',
-    'ff': '🎮 Free Fire',
-    'ip': '🌐 IP Location',
-    'pan': '💳 PAN Card',
-    'ifsc': '🏦 IFSC Code',
-    'aadhar': '🆔 Aadhar',
-    'vehicle': '🚘 Vehicle',
-    'mail': '📧 Email'
-}
-
-# ==================== MESSAGES ====================
-
-HELP_MESSAGE = f"""
-╔══════════════════════════════╗
-║     🌀 𝐇𝐄𝐋𝐏 𝐌𝐄𝐍𝐔 🌀       ║
-╠══════════════════════════════╣
-║   {BRAND}                    ║
-╠══════════════════════════════╣
-║   📌 𝐁𝐀𝐒𝐈𝐂 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒:      ║
-║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   /start - 𝐒𝐭𝐚𝐫𝐭 𝐁𝐨𝐭       ║
-║   /help - 𝐓𝐡𝐢𝐬 𝐌𝐞𝐧𝐮        ║
-║   /profile - 𝐘𝐨𝐮𝐫 𝐒𝐭𝐚𝐭𝐬    ║
-║   /share - 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥 𝐋𝐢𝐧𝐤   ║
-║   /verify - 𝐕𝐞𝐫𝐢𝐟𝐲 𝐌𝐞𝐦𝐛𝐞𝐫  ║
-║   /admins - 𝐂𝐨𝐧𝐭𝐚𝐜𝐭 𝐓𝐞𝐚𝐦   ║
-╠══════════════════════════════╣
-║   🔍 𝐈𝐍𝐅𝐎 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒:       ║
-║   ━━━━━━━━━━━━━━━━━━━━━       ║
-"""
-
-for cmd, desc in API_COMMANDS.items():
-    HELP_MESSAGE += f"║   /{cmd} [value] - {desc}\n"
-
-HELP_MESSAGE += f"""
-╠══════════════════════════════╣
-║   💡 𝐄𝐱𝐚𝐦𝐩𝐥𝐞𝐬:              ║
-║   /num 9876543210           ║
-║   /insta virat.kohli        ║
-║   /aadhar 123456789012      ║
-╠══════════════════════════════╣
-║   ⚡ 𝐅𝐫𝐞𝐞: {FREE_CREDITS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬  ║
-║   🔥 𝐑𝐞𝐟𝐞𝐫 {REFERRALS_NEEDED} = +{REFERRAL_BONUS} ║
-║   👑 {BRAND}                  ║
-╚══════════════════════════════╝
-"""
-
-WELCOME_CAPTION = f"""
-╔══════════════════════════════╗
-║     🌀 𝐖𝐄𝐋𝐂𝐎𝐌𝐄 𝐓𝐎 𝐁𝐎𝐓 🌀  ║
-╠══════════════════════════════╣
-║   {BRAND}                    ║
-╠══════════════════════════════╣
-║   ✅ 𝐕𝐄𝐑𝐈𝐅𝐈𝐂𝐀𝐓𝐈𝐎𝐍 𝐒𝐔𝐂𝐂𝐄𝐒𝐒 ║
-║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   ✨ 𝐘𝐨𝐮 𝐜𝐚𝐧 𝐧𝐨𝐰 𝐮𝐬𝐞 𝐭𝐡𝐞 𝐛𝐨𝐭! ║
-║   ⚡ 𝐅𝐫𝐞𝐞: {FREE_CREDITS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬    ║
-║   📌 𝐔𝐬𝐞 /help 𝐟𝐨𝐫 𝐜𝐨𝐦𝐦𝐚𝐧𝐝𝐬   ║
-║   👑 {BRAND}                  ║
-╚══════════════════════════════╝
-"""
-
-def get_awesome_start(first_name, user_id, credits):
-    batch = credits['batch']
-    if batch == 'owner':
-        title = "👑 𝐎𝐖𝐍𝐄𝐑 👑"
-        color = "🔥"
-    elif batch == 'admin':
-        title = "👥 𝐀𝐃𝐌𝐈𝐍 👥"
-        color = "⚡"
-    elif batch == 'star':
-        title = "⭐ 𝐒𝐓𝐀𝐑 ⭐"
-        color = "✨"
-    elif batch == 'premium':
-        title = "💎 𝐏𝐑𝐄𝐌𝐈𝐔𝐌 💎"
-        color = "💜"
-    else:
-        title = "👤 𝐅𝐑𝐄𝐄 𝐔𝐒𝐄𝐑 👤"
-        color = "💚"
-    
-    cmd_list = ""
-    cmds = list(API_COMMANDS.items())
-    for i in range(0, len(cmds), 2):
-        cmd1, desc1 = cmds[i]
-        if i+1 < len(cmds):
-            cmd2, desc2 = cmds[i+1]
-            cmd_list += f"║   /{cmd1:<8} {desc1:<12}  /{cmd2:<8} {desc2}\n"
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                
+                # Check if data exists
+                if data.get('success'):
+                    if data.get('data'):
+                        # Format the response
+                        result_text = f"**{BRAND}**\n\n"
+                        result_text += f"**📍 {API_COMMANDS[endpoint]['name']} Result**\n"
+                        result_text += "━━━━━━━━━━━━━━━━\n\n"
+                        
+                        # Format data array
+                        if isinstance(data['data'], list):
+                            if len(data['data']) > 0:
+                                for idx, item in enumerate(data['data'], 1):
+                                    if item and isinstance(item, dict):
+                                        result_text += f"**📊 Record {idx}**\n"
+                                        for key, value in item.items():
+                                            if value and value != "null":
+                                                clean_key = key.replace('_', ' ').title()
+                                                result_text += f"• **{clean_key}:** {value}\n"
+                                        result_text += "━━━━━━━━━━━━━━━━\n"
+                            else:
+                                return f"**{BRAND}**\n\n❌ **No data found**"
+                        else:
+                            # Single item
+                            if data['data']:
+                                for key, value in data['data'].items():
+                                    if value and value != "null":
+                                        clean_key = key.replace('_', ' ').title()
+                                        result_text += f"• **{clean_key}:** {value}\n"
+                            else:
+                                return f"**{BRAND}**\n\n❌ **No data found**"
+                        
+                        if data.get('time'):
+                            result_text += f"\n⏱️ Time: {data['time']}"
+                        
+                        return result_text
+                    else:
+                        return f"**{BRAND}**\n\n❌ **No data found**"
+                else:
+                    return f"**{BRAND}**\n\n❌ **No data found**"
+                    
+            except Exception as e:
+                return f"**{BRAND}**\n\n❌ **Error parsing data**"
         else:
-            cmd_list += f"║   /{cmd1:<8} {desc1}\n"
-    
-    start_style = f"""
-╔══════════════════════════════════════╗
-║     🌀 𝐓𝐀𝐓𝐒𝐔𝐌𝐀𝐊𝐈 𝐁𝐎𝐓 🌀     ║
-╠══════════════════════════════════════╣
-║        ✨ 𝐖𝐄𝐋𝐂𝐎𝐌𝐄 ✨         ║
-║   ━━━━━━━━━━━━━━━━━━━━━━━━━   ║
-║                                  ║
-║   👋 𝐇𝐞𝐥𝐥𝐨, {first_name}!  ║
-║   {color} {title}              ║
-║                                  ║
-║   🆔 𝐔𝐬𝐞𝐫 𝐈𝐃: {user_id}       ║
-║   💰 𝐂𝐫𝐞𝐝𝐢𝐭𝐬: {credits['left']}/{credits['total']}      ║
-║                                  ║
-╠══════════════════════════════════════╣
-║     ⚡ 𝐖𝐇𝐀𝐓 𝐈 𝐂𝐀𝐍 𝐃𝐎 ⚡     ║
-║   ━━━━━━━━━━━━━━━━━━━━━━━━━   ║
-║                                  ║
-{cmd_list}
-║                                  ║
-╠══════════════════════════════════════╣
-║     🔥 𝐔𝐒𝐄𝐅𝐔𝐋 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒 🔥   ║
-║   ━━━━━━━━━━━━━━━━━━━━━━━━━   ║
-║                                  ║
-║   📌 /profile  - 𝐘𝐨𝐮𝐫 𝐒𝐭𝐚𝐭𝐬  ║
-║   📌 /share    - 𝐆𝐞𝐭 𝐋𝐢𝐧𝐤    ║
-║   📌 /help     - 𝐀𝐥𝐥 𝐂𝐦𝐝𝐬    ║
-║   📌 /admins   - 𝐂𝐨𝐧𝐭𝐚𝐜𝐭     ║
-║                                  ║
-╠══════════════════════════════════════╣
-║   💡 𝐅𝐫𝐞𝐞: {FREE_CREDITS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬     ║
-║   🔥 𝐑𝐞𝐟𝐞𝐫 {REFERRALS_NEEDED} = +{REFERRAL_BONUS}    ║
-║   👑 {BRAND}                 ║
-╚══════════════════════════════════════╝
-"""
-    return start_style
+            return f"**{BRAND}**\n\n❌ **Error {response.status_code}**"
+            
+    except requests.exceptions.Timeout:
+        return f"**{BRAND}**\n\n❌ **Request timeout!**\nAPI took more than {API_TIMEOUT} seconds to respond."
+    except requests.exceptions.ConnectionError:
+        return f"**{BRAND}**\n\n❌ **Connection Error**\nCould not connect to API server."
+    except Exception as e:
+        return f"**{BRAND}**\n\n❌ **Error**\n{str(e)}"
 
-# ==================== START COMMAND ====================
-@bot.message_handler(commands=['start'])
+# ==================== MESSAGE HANDLER - ONLY PRIVATE CHAT ====================
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+    chat_id = message.chat.id
+    chat_type = message.chat.type
+    
+    # Agar group ya channel mein message hai to ignore karo
+    if chat_type in ['group', 'supergroup', 'channel']:
+        # Group/channel messages ko ignore karo - koi reply nahi
+        print(f"📨 Ignored group message from {chat_id}")
+        return
+    
+    # Yahan se sirf private messages handle honge
+    user_id = message.from_user.id
+    text = message.text.strip()
+    
+    print(f"📨 Private message from {user_id}: {text}")
+    
+    # Handle commands
+    if text.startswith('/'):
+        parts = text.split()
+        cmd = parts[0][1:].lower()
+        
+        if cmd == 'start':
+            send_welcome(message)
+        elif cmd in API_COMMANDS:
+            handle_api_command(message, cmd, parts)
+        elif cmd == 'profile':
+            show_profile_command(message)
+        elif cmd == 'referral':
+            show_referral_command(message)
+        elif cmd == 'help':
+            show_help_command(message)
+        elif cmd == 'admins':
+            show_admins_command(message)
+        elif cmd in ['ban', 'unban', 'stats', 'broadcast']:
+            handle_admin_commands(message, cmd)
+        else:
+            bot.reply_to(message, "❌ **Unknown command!** Use /start", parse_mode="Markdown")
+    else:
+        # Check if user is waiting for input
+        if user_id in user_input_state and user_input_state[user_id].get('waiting'):
+            handle_user_input(message)
+        else:
+            bot.reply_to(message, "❌ **Please use the buttons or commands!**\nUse /start to see the menu.", parse_mode="Markdown")
+
 def send_welcome(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     first_name = message.from_user.first_name or "User"
     
+    # Check if banned
     if is_user_banned(user_id) and user_id != OWNER_ID:
-        bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
+        bot.reply_to(message, "🚫 **You are banned!**", parse_mode="Markdown")
         return
     
+    # Check for referral
     args = message.text.split()
-    if len(args) > 1 and args[1].startswith('ref_'):
+    if len(args) > 1 and args[1].startswith('ref'):
         try:
-            referrer_id = int(args[1].replace('ref_', ''))
+            referrer_id = int(args[1].replace('ref', ''))
             if referrer_id != user_id:
-                executor.submit(add_referral, referrer_id, user_id)
+                add_referral(user_id, referrer_id)
         except:
             pass
     
-    credits = get_user_credits(user_id)
+    # Add user to database
+    c.execute("INSERT OR IGNORE INTO users (user_id, joined_date) VALUES (?, ?)",
+              (user_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
     
+    # Check if verified
     if is_user_verified(user_id):
-        try:
-            bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞 𝐁𝐚𝐜𝐤!**", parse_mode="Markdown", supports_streaming=True, timeout=2)
-            start_text = get_awesome_start(first_name, user_id, credits)
-            bot.send_message(chat_id, start_text, parse_mode="Markdown")
-        except:
-            start_text = get_awesome_start(first_name, user_id, credits)
-            bot.send_message(chat_id, start_text, parse_mode="Markdown")
+        show_main_menu(chat_id, first_name)
         return
     
-    try:
-        bot.send_photo(chat_id, START_IMAGE, caption="🌀 **𝐓𝐀𝐓𝐒𝐔𝐌𝐀𝐊𝐈**", parse_mode="Markdown")
-    except:
-        pass
-    
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧 𝐆𝐫𝐨𝐮𝐩", url=GROUP_LINK),
-        InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url=CHANNEL_LINK)
+    # Show verification prompt
+    verify_markup = InlineKeyboardMarkup(row_width=2)
+    verify_markup.add(
+        InlineKeyboardButton("📢 Group", url=GROUP_LINK),
+        InlineKeyboardButton("📣 Channel 1", url=CHANNEL_LINK),
+        InlineKeyboardButton("📢 Personal", url=CHANNEL3_LINK)
     )
-    markup.add(InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲", callback_data="verify"))
-    
-    bot.send_message(
-        chat_id,
-        f"👋 **𝐇𝐞𝐥𝐥𝐨 {first_name}!**\n\n🔒 **𝐌𝐞𝐦𝐛𝐞𝐫𝐬𝐡𝐢𝐩 𝐑𝐞𝐪𝐮𝐢𝐫𝐞𝐝**\n\n1️⃣ 𝐉𝐨𝐢𝐧 𝐆𝐫𝐨𝐮𝐩 & 𝐂𝐡𝐚𝐧𝐧𝐞𝐥\n2️⃣ 𝐂𝐥𝐢𝐜𝐤 𝐕𝐞𝐫𝐢𝐟𝐲",
-        reply_markup=markup,
-        parse_mode="Markdown"
-    )
-
-# ==================== VERIFY CALLBACK ====================
-@bot.callback_query_handler(func=lambda call: call.data == "verify")
-def verify_callback(call):
-    user_id = call.from_user.id
-    chat_id = call.message.chat.id
-    first_name = call.from_user.first_name or "User"
+    verify_markup.add(InlineKeyboardButton("✅ Verify Now", callback_data="verify_now"))
     
     try:
-        bot.delete_message(chat_id, call.message.message_id)
-    except:
-        pass
-    
-    if check_membership(user_id):
-        mark_user_verified(user_id)
-        credits = get_user_credits(user_id)
-        
-        try:
-            bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞!**", parse_mode="Markdown", supports_streaming=True, timeout=2)
-        except:
-            pass
-        
-        start_text = get_awesome_start(first_name, user_id, credits)
-        bot.send_message(chat_id, start_text, parse_mode="Markdown")
-        
-        bot.answer_callback_query(call.id, "✅ 𝐕𝐞𝐫𝐢𝐟𝐢𝐞𝐝!")
-    else:
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧", url=GROUP_LINK),
-            InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧", url=CHANNEL_LINK)
+        bot.send_photo(
+            chat_id,
+            START_IMAGE,
+            caption=f"**Hello {first_name}!**\n\n🔒 **3 Channels Required**\n\nPlease join ALL 3 channels below, then click Verify:",
+            reply_markup=verify_markup,
+            parse_mode="Markdown"
         )
-        markup.add(InlineKeyboardButton("✅ 𝐓𝐫𝐲 𝐀𝐠𝐚𝐢𝐧", callback_data="verify"))
-        
+    except:
         bot.send_message(
             chat_id,
-            "❌ **𝐍𝐨𝐭 𝐚 𝐦𝐞𝐦𝐛𝐞𝐫!**\n\n𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐛𝐨𝐭𝐡 𝐠𝐫𝐨𝐮𝐩 & 𝐜𝐡𝐚𝐧𝐧𝐞𝐥.",
+            f"**Hello {first_name}!**\n\n🔒 **3 Channels Required**\n\nPlease join ALL 3 channels below, then click Verify:",
+            reply_markup=verify_markup,
+            parse_mode="Markdown"
+        )
+
+def show_main_menu(chat_id, first_name):
+    """Show main menu after verification"""
+    markup = InlineKeyboardMarkup(row_width=2)
+    
+    # Add API command buttons
+    buttons = []
+    for cmd, info in API_COMMANDS.items():
+        buttons.append(InlineKeyboardButton(info['name'], callback_data=f"cmd_{cmd}"))
+    
+    # Arrange in rows of 2
+    for i in range(0, len(buttons), 2):
+        if i+1 < len(buttons):
+            markup.row(buttons[i], buttons[i+1])
+        else:
+            markup.row(buttons[i])
+    
+    # Add utility buttons
+    markup.row(
+        InlineKeyboardButton("📚 Help", callback_data="help"),
+        InlineKeyboardButton("👤 Profile", callback_data="profile")
+    )
+    markup.row(
+        InlineKeyboardButton("👥 Referral", callback_data="referral"),
+        InlineKeyboardButton("👑 Admins", callback_data="admins")
+    )
+    
+    try:
+        bot.send_photo(
+            chat_id, 
+            START_IMAGE,
+            caption=f"**Welcome to {BOT_NAME}, {first_name}!**\n\nChoose an option below:",
             reply_markup=markup,
             parse_mode="Markdown"
         )
-        bot.answer_callback_query(call.id, "❌ 𝐅𝐚𝐢𝐥𝐞𝐝")
-
-# ==================== HELP COMMAND ====================
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    bot.reply_to(message, HELP_MESSAGE, parse_mode="Markdown")
-
-# ==================== PROFILE COMMAND ====================
-@bot.message_handler(commands=['profile'])
-def profile_command(message):
-    user_id = message.from_user.id
-    
-    if is_user_banned(user_id) and user_id != OWNER_ID:
-        bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
-        return
-    
-    credits = get_user_credits(user_id)
-    next_bonus = REFERRALS_NEEDED - (credits['referrals'] % REFERRALS_NEEDED)
-    if next_bonus == REFERRALS_NEEDED:
-        next_bonus = 0
-    
-    profile_msg = f"""
-╔══════════════════════════════╗
-║     📊 𝐏𝐑𝐎𝐅𝐈𝐋𝐄 📊         ║
-╠══════════════════════════════╣
-║   {BRAND}                    ║
-╠══════════════════════════════╣
-║   👤 𝐈𝐃: {user_id}           ║
-║   🏷️ 𝐁𝐚𝐭𝐜𝐡: {credits['batch'].upper()} ║
-╠══════════════════════════════╣
-║   💰 𝐂𝐑𝐄𝐃𝐈𝐓𝐒:               ║
-║   ━━━━━━━━━━━━━━━━━━━━━       ║
-║   📊 𝐔𝐬𝐞𝐝: {credits['used']}/{credits['total']}  ║
-║   💎 𝐋𝐞𝐟𝐭: {credits['left']}           ║
-║                               ║
-║   👥 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥𝐬: {credits['referrals']}   ║
-║   🔥 𝐍𝐞𝐱𝐭: {next_bonus} 𝐦𝐨𝐫𝐞      ║
-╠══════════════════════════════╣
-║   🔗 /share - 𝐆𝐞𝐭 𝐋𝐢𝐧𝐤      ║
-║   👑 {BRAND}                  ║
-╚══════════════════════════════╝
-"""
-    bot.reply_to(message, profile_msg, parse_mode="Markdown")
-
-# ==================== SHARE COMMAND ====================
-@bot.message_handler(commands=['share'])
-def share_command(message):
-    user_id = message.from_user.id
-    
-    if is_user_banned(user_id) and user_id != OWNER_ID:
-        bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
-        return
-    
-    bot_username = bot.get_me().username
-    referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-    credits = get_user_credits(user_id)
-    next_bonus = REFERRALS_NEEDED - (credits['referrals'] % REFERRALS_NEEDED)
-    
-    share_msg = f"""
-╔══════════════════════════════╗
-║     🔗 𝐑𝐄𝐅𝐄𝐑𝐑𝐀𝐋 𝐋𝐈𝐍𝐊     ║
-╠══════════════════════════════╣
-║   {BRAND}                    ║
-╠══════════════════════════════╣
-║   👥 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥𝐬: {credits['referrals']}   ║
-║   🔥 𝐍𝐞𝐞𝐝 {next_bonus} 𝐦𝐨𝐫𝐞    ║
-║   ✨ +{REFERRAL_BONUS} 𝐂𝐫𝐞𝐝𝐢𝐭𝐬    ║
-╠══════════════════════════════╣
-║   `{referral_link}`          ║
-╠══════════════════════════════╣
-║   📤 𝐒𝐡𝐚𝐫𝐞 & 𝐄𝐚𝐫𝐧!         ║
-╚══════════════════════════════╝
-"""
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("📤 𝐒𝐡𝐚𝐫𝐞", switch_inline_query=f"Join {BRAND} Bot! {referral_link}"))
-    
-    bot.reply_to(message, share_msg, parse_mode="Markdown", reply_markup=markup)
-
-# ==================== ADMINS COMMAND ====================
-@bot.message_handler(commands=['admins'])
-def admins_command(message):
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("👑 𝐂𝐨𝐧𝐭𝐚𝐜𝐭 𝐎𝐰𝐧𝐞𝐫", url=f"tg://user?id={OWNER_ID}"))
-    
-    msg_text = f"""
-╔══════════════════════════════╗
-║     👑 𝐂𝐎𝐍𝐓𝐀𝐂𝐓 𝐓𝐄𝐀𝐌 👑   ║
-╠══════════════════════════════╣
-║   {BRAND}                    ║
-╠══════════════════════════════╣
-║   𝐎𝐰𝐧𝐞𝐫 𝐈𝐃: {OWNER_ID}      ║
-╠══════════════════════════════╣
-║   𝐂𝐥𝐢𝐜𝐤 𝐛𝐞𝐥𝐨𝐰 𝐭𝐨 𝐦𝐞𝐬𝐬𝐚𝐠𝐞   ║
-╚══════════════════════════════╝
-"""
-    bot.reply_to(message, msg_text, parse_mode="Markdown", reply_markup=markup)
-
-# ==================== VERIFY COMMAND ====================
-@bot.message_handler(commands=['verify'])
-def verify_command(message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    first_name = message.from_user.first_name or "User"
-    
-    if is_user_banned(user_id) and user_id != OWNER_ID:
-        bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
-        return
-    
-    if check_membership(user_id):
-        mark_user_verified(user_id)
-        credits = get_user_credits(user_id)
-        
-        try:
-            bot.send_video(chat_id, WELCOME_VIDEO, caption="🎬 **𝐖𝐞𝐥𝐜𝐨𝐦𝐞!**", parse_mode="Markdown", supports_streaming=True, timeout=2)
-        except:
-            pass
-        
-        start_text = get_awesome_start(first_name, user_id, credits)
-        bot.send_message(chat_id, start_text, parse_mode="Markdown")
-    else:
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧", url=GROUP_LINK),
-            InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧", url=CHANNEL_LINK)
-        )
-        bot.reply_to(
-            message,
-            "❌ **𝐍𝐨𝐭 𝐚 𝐦𝐞𝐦𝐛𝐞𝐫!**\n\n𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐟𝐢𝐫𝐬𝐭.",
+    except:
+        bot.send_message(
+            chat_id,
+            f"**Welcome to {BOT_NAME}, {first_name}!**\n\nChoose an option below:",
             reply_markup=markup,
             parse_mode="Markdown"
         )
 
-# ==================== INFO COMMANDS - 3 SECOND TIMEOUT ====================
-@bot.message_handler(commands=list(API_COMMANDS.keys()))
-def info_commands(message):
+def handle_api_command(message, cmd, parts):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    if is_user_banned(user_id) and user_id != OWNER_ID:
-        bot.reply_to(message, "🚫 𝐁𝐚𝐧𝐧𝐞𝐝!", parse_mode="Markdown")
+    if len(parts) < 2:
+        info = API_COMMANDS[cmd]
+        bot.reply_to(message, 
+                    f"**{info['name']}**\n\n{info['desc']}\n\n📝 **Usage:** `/{cmd} {info['example']}`",
+                    parse_mode="Markdown")
         return
     
     if not is_user_verified(user_id):
         if not check_membership(user_id):
-            markup = InlineKeyboardMarkup()
-            markup.add(
-                InlineKeyboardButton("📢 𝐉𝐨𝐢𝐧", url=GROUP_LINK),
-                InlineKeyboardButton("📣 𝐉𝐨𝐢𝐧", url=CHANNEL_LINK)
-            )
-            bot.reply_to(message, "❌ 𝐉𝐨𝐢𝐧 𝐟𝐢𝐫𝐬𝐭!", reply_markup=markup)
+            bot.reply_to(message, "❌ **Please verify first!** Use /start", parse_mode="Markdown")
             return
         else:
             mark_user_verified(user_id)
     
-    credits = get_user_credits(user_id)
-    if credits['left'] <= 0 and user_id != OWNER_ID and not is_admin_user(user_id):
-        bot_username = bot.get_me().username
-        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-        bot.reply_to(
-            message,
-            f"❌ 𝐍𝐨 𝐜𝐫𝐞𝐝𝐢𝐭𝐬!\n/share\n{referral_link}",
-            parse_mode="Markdown"
-        )
-        return
+    query = parts[1]
+    bot.send_chat_action(chat_id, 'typing')
+    result = fetch_api_data(cmd, query)
+    increment_user_commands(user_id)
+    bot.reply_to(message, result, parse_mode="Markdown")
+
+def show_profile_command(message):
+    user_id = message.from_user.id
+    stats = get_user_stats(user_id)
     
-    cmd = message.text.split()[0][1:]
-    args = message.text.split()[1] if len(message.text.split()) > 1 else None
+    if stats:
+        verified, is_admin, is_owner, joined_date, total_commands, referrals, referred_by = stats
+        role = "👑 OWNER" if is_owner else "👥 ADMIN" if is_admin else "👤 USER"
+        
+        profile_text = f"""
+📊 **USER PROFILE**
+━━━━━━━━━━━━━━━━
+👤 **ID:** `{user_id}`
+🏷️ **Role:** {role}
+✅ **Verified:** {'Yes' if verified else 'No'}
+📊 **Commands:** {total_commands}
+👥 **Referrals:** {referrals}
+📅 **Joined:** {joined_date[:10]}
+"""
+        bot.reply_to(message, profile_text, parse_mode="Markdown")
+
+def show_referral_command(message):
+    user_id = message.from_user.id
+    bot_username = bot.get_me().username
+    referral_link = f"https://t.me/{bot_username}?start=ref{user_id}"
     
-    if not args:
-        bot.reply_to(message, f"❌ /{cmd} [𝐯𝐚𝐥𝐮𝐞]")
-        return
+    c.execute("SELECT referrals FROM users WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    referrals = result[0] if result else 0
+    
+    ref_text = f"""
+👥 **REFERRAL SYSTEM**
+━━━━━━━━━━━━━━━━
+**Your Referrals:** {referrals}
+
+**Your Link:**
+`{referral_link}`
+
+Share this link with friends!
+"""
+    bot.reply_to(message, ref_text, parse_mode="Markdown")
+
+def show_help_command(message):
+    help_text = f"""
+╔══════════════════════════════╗
+║ 📚 **HELP MENU** 📚 ║
+╠══════════════════════════════╣
+║ **{BOT_NAME}** ║
+╠══════════════════════════════╣
+║ **AVAILABLE COMMANDS:** ║
+"""
+    for cmd, info in API_COMMANDS.items():
+        help_text += f"║ /{cmd} - {info['name']}\n"
+    
+    help_text += f"""
+╠══════════════════════════════╣
+║ **UTILITY:** ║
+║ /start - Main menu ║
+║ /profile - Your stats ║
+║ /referral - Get link ║
+║ /admins - Contact team ║
+╠══════════════════════════════╣
+║ 👑 **{BRAND}** ║
+╚══════════════════════════════╝
+"""
+    bot.reply_to(message, help_text, parse_mode="Markdown")
+
+def show_admins_command(message):
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("👑 Contact Owner", url=f"tg://user?id={OWNER_ID}"))
+    
+    msg_text = f"""
+╔══════════════════════════════╗
+║ 👑 **CONTACT TEAM** 👑 ║
+╠══════════════════════════════╣
+║ **{BOT_NAME}** ║
+╠══════════════════════════════╣
+║ **Owner ID:** `{OWNER_ID}` ║
+╠══════════════════════════════╣
+║ Click below to message ║
+╚══════════════════════════════╝
+"""
+    bot.reply_to(message, msg_text, parse_mode="Markdown", reply_markup=markup)
+
+def handle_user_input(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    text = message.text.strip()
+    
+    cmd = user_input_state[user_id]['cmd']
+    del user_input_state[user_id]
+    
+    # Check verification
+    if not is_user_verified(user_id):
+        if not check_membership(user_id):
+            bot.reply_to(message, "❌ **Please verify first!** Use /start", parse_mode="Markdown")
+            return
+        else:
+            mark_user_verified(user_id)
     
     # Send typing action
     bot.send_chat_action(chat_id, 'typing')
     
-    # Get raw data with 3 second timeout
-    result = fetch_data(cmd, args)
-    
-    if user_id != OWNER_ID and not is_admin_user(user_id):
-        use_credit(user_id)
-        credits = get_user_credits(user_id)
-        result += f"\n\n⚡ 𝐋𝐞𝐟𝐭: {credits['left']}"
-    
+    # Fetch and send data
+    result = fetch_api_data(cmd, text)
+    increment_user_commands(user_id)
     bot.reply_to(message, result, parse_mode="Markdown")
+    
+    # Show main menu
+    first_name = message.from_user.first_name or "User"
+    show_main_menu(chat_id, first_name)
 
-# ==================== USER MANAGEMENT COMMANDS ====================
-
-@bot.message_handler(commands=['ban'])
-def ban_command(message):
+def handle_admin_commands(message, cmd):
     user_id = message.from_user.id
     
     if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+        bot.reply_to(message, "❌ **Admin only!**", parse_mode="Markdown")
         return
     
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /ban [𝐢𝐝] [𝐫𝐞𝐚𝐬𝐨𝐧]")
-        return
-    
-    try:
-        target = int(args[1])
-        reason = " ".join(args[2:]) if len(args) > 2 else "No reason"
+    if cmd == 'stats':
+        c.execute("SELECT COUNT(*) FROM users")
+        total_users = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE verified = 1")
+        total_verified = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM banned_users")
+        total_banned = c.fetchone()[0]
+        c.execute("SELECT SUM(total_commands) FROM users")
+        total_commands = c.fetchone()[0] or 0
+        c.execute("SELECT SUM(referrals) FROM users")
+        total_referrals = c.fetchone()[0] or 0
         
-        if target == OWNER_ID:
-            bot.reply_to(message, "❌ 𝐂𝐚𝐧'𝐭 𝐛𝐚𝐧 𝐨𝐰𝐧𝐞𝐫!")
-            return
-        
-        ban_user(target, user_id, reason)
-        bot.reply_to(message, f"✅ 𝐁𝐚𝐧𝐧𝐞𝐝 `{target}`!\n𝐑𝐞𝐚𝐬𝐨𝐧: {reason}", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
-
-@bot.message_handler(commands=['unban'])
-def unban_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /unban [𝐢𝐝]")
-        return
-    
-    try:
-        target = int(args[1])
-        unban_user(target)
-        bot.reply_to(message, f"✅ 𝐔𝐧𝐛𝐚𝐧𝐧𝐞𝐝 `{target}`!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
-
-@bot.message_handler(commands=['userinfo'])
-def userinfo_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /userinfo [𝐢𝐝]")
-        return
-    
-    try:
-        target = int(args[1])
-        credits = get_user_credits(target)
-        
-        info_msg = f"""
-📊 **𝐔𝐒𝐄𝐑 𝐈𝐍𝐅𝐎**
+        msg_text = f"""
+📊 **BOT STATISTICS**
 ━━━━━━━━━━━━━━━━
-🆔 𝐈𝐃: {target}
-🏷️ 𝐁𝐚𝐭𝐜𝐡: {credits['batch'].upper()}
-👑 𝐀𝐝𝐦𝐢𝐧: {'𝐘𝐞𝐬' if is_admin_user(target) else '𝐍𝐨'}
-🔴 𝐁𝐚𝐧𝐧𝐞𝐝: {'𝐘𝐞𝐬' if is_user_banned(target) else '𝐍𝐨'}
-💰 𝐂𝐫𝐞𝐝𝐢𝐭𝐬: {credits['used']}/{credits['total']}
-👥 𝐑𝐞𝐟𝐞𝐫𝐫𝐚𝐥𝐬: {credits['referrals']}
+👥 **Total Users:** {total_users}
+✅ **Verified:** {total_verified}
+🔴 **Banned:** {total_banned}
+📊 **Commands:** {total_commands}
+👥 **Referrals:** {total_referrals}
 """
-        bot.reply_to(message, info_msg, parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
-
-# ==================== ADMIN MANAGEMENT COMMANDS ====================
-
-@bot.message_handler(commands=['addadmin'])
-def addadmin_command(message):
-    user_id = message.from_user.id
+        bot.reply_to(message, msg_text, parse_mode="Markdown")
     
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /addadmin [𝐢𝐝]")
-        return
-    
-    try:
-        target = int(args[1])
-        if target == OWNER_ID:
-            bot.reply_to(message, "❌ 𝐔𝐬𝐞𝐫 𝐢𝐬 𝐚𝐥𝐫𝐞𝐚𝐝𝐲 𝐨𝐰𝐧𝐞𝐫!")
+    elif cmd == 'broadcast':
+        if user_id != OWNER_ID:
+            bot.reply_to(message, "❌ **Only owner!**", parse_mode="Markdown")
             return
-        add_admin(target)
-        bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨𝐰 𝐀𝐃𝐌𝐈𝐍!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
-
-@bot.message_handler(commands=['removeadmin'])
-def removeadmin_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /removeadmin [𝐢𝐝]")
-        return
-    
-    try:
-        target = int(args[1])
-        if target == OWNER_ID:
-            bot.reply_to(message, "❌ 𝐂𝐚𝐧𝐧𝐨𝐭 𝐫𝐞𝐦𝐨𝐯𝐞 𝐨𝐰𝐧𝐞𝐫!")
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            bot.reply_to(message, "**Usage:** /broadcast [message]", parse_mode="Markdown")
             return
-        remove_admin(target)
-        bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨 𝐥𝐨𝐧𝐠𝐞𝐫 𝐚𝐝𝐦𝐢𝐧!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
+        broadcast_msg = args[1]
+        c.execute("SELECT user_id FROM users WHERE is_banned = 0")
+        users = c.fetchall()
+        sent = 0
+        for (uid,) in users:
+            try:
+                bot.send_message(uid, f"📢 **BROADCAST**\n\n{broadcast_msg}\n\n{BRAND}", parse_mode="Markdown")
+                sent += 1
+                time.sleep(0.05)
+            except:
+                continue
+        bot.reply_to(message, f"✅ **Broadcast sent to {sent} users!**")
 
-@bot.message_handler(commands=['blockadmin'])
-def blockadmin_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
+# ==================== CALLBACK HANDLER ====================
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    # Sirf private chat ke callbacks handle karo
+    if call.message.chat.type in ['group', 'supergroup', 'channel']:
+        bot.answer_callback_query(call.id, "Please use bot in private chat!")
         return
     
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /blockadmin [𝐢𝐝] [𝐫𝐞𝐚𝐬𝐨𝐧]")
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
+    data = call.data
+    
+    print(f"📞 Callback: {data}")
+    
+    # Check if banned
+    if is_user_banned(user_id) and user_id != OWNER_ID:
+        bot.answer_callback_query(call.id, "🚫 You are banned!", show_alert=True)
         return
     
-    try:
-        target = int(args[1])
-        reason = " ".join(args[2:]) if len(args) > 2 else "Admin blocked"
-        
-        if target == OWNER_ID:
-            bot.reply_to(message, "❌ 𝐂𝐚𝐧𝐧𝐨𝐭 𝐛𝐥𝐨𝐜𝐤 𝐨𝐰𝐧𝐞𝐫!")
-            return
-        
-        block_admin(target, user_id, reason)
-        bot.reply_to(message, f"✅ 𝐀𝐝𝐦𝐢𝐧 `{target}` 𝐛𝐥𝐨𝐜𝐤𝐞𝐝!\n𝐑𝐞𝐚𝐬𝐨𝐧: {reason}", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐈𝐃!")
-
-@bot.message_handler(commands=['setadminlimit'])
-def setadminlimit_command(message):
-    user_id = message.from_user.id
+    # Handle verification
+    if data == "verify_now":
+        if check_membership(user_id):
+            mark_user_verified(user_id)
+            
+            # Get user's first name
+            first_name = call.from_user.first_name or "User"
+            
+            # Delete verification message
+            try:
+                bot.delete_message(chat_id, message_id)
+            except:
+                pass
+            
+            # Show main menu
+            show_main_menu(chat_id, first_name)
+            bot.answer_callback_query(call.id, "✅ Verified! Welcome!")
+        else:
+            missing = get_missing_channels(user_id)
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("📢 Group", url=GROUP_LINK),
+                InlineKeyboardButton("📣 Channel 1", url=CHANNEL_LINK),
+                InlineKeyboardButton("📢 Personal", url=CHANNEL3_LINK)
+            )
+            markup.add(InlineKeyboardButton("🔄 Try Again", callback_data="verify_now"))
+            
+            missing_text = "\n".join([f"❌ {ch}" for ch in missing])
+            
+            try:
+                bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=f"❌ **Not a member!**\n\n**Missing:**\n{missing_text}",
+                    parse_mode="Markdown",
+                    reply_markup=markup
+                )
+            except:
+                pass
+            
+            bot.answer_callback_query(call.id, "❌ Not verified")
     
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 3:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /setadminlimit [𝐚𝐝𝐦𝐢𝐧_𝐢𝐝] [𝐥𝐢𝐦𝐢𝐭]")
-        return
-    
-    try:
-        target = int(args[1])
-        limit = int(args[2])
-        
-        if target == OWNER_ID:
-            bot.reply_to(message, "❌ 𝐂𝐚𝐧𝐧𝐨𝐭 𝐬𝐞𝐭 𝐥𝐢𝐦𝐢𝐭 𝐟𝐨𝐫 𝐨𝐰𝐧𝐞𝐫!")
+    # Handle command buttons
+    elif data.startswith("cmd_"):
+        if not is_user_verified(user_id):
+            bot.answer_callback_query(call.id, "❌ Please verify first!", show_alert=True)
             return
         
-        set_admin_limit(target, limit)
-        bot.reply_to(message, f"✅ 𝐀𝐝𝐦𝐢𝐧 `{target}` 𝐥𝐢𝐦𝐢𝐭 𝐬𝐞𝐭 𝐭𝐨 {limit}!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
-
-@bot.message_handler(commands=['adminlist'])
-def adminlist_command(message):
-    user_id = message.from_user.id
+        cmd = data.replace("cmd_", "")
+        if cmd in API_COMMANDS:
+            info = API_COMMANDS[cmd]
+            user_input_state[user_id] = {'cmd': cmd, 'waiting': True}
+            
+            back_markup = InlineKeyboardMarkup()
+            back_markup.add(InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main"))
+            
+            try:
+                bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=f"**{info['name']}**\n\n{info['desc']}\n\n📝 **Example:** `{info['example']}`\n\nPlease send your input:",
+                    parse_mode="Markdown",
+                    reply_markup=back_markup
+                )
+            except:
+                bot.send_message(
+                    chat_id,
+                    f"**{info['name']}**\n\n{info['desc']}\n\n📝 **Example:** `{info['example']}`\n\nPlease send your input:",
+                    parse_mode="Markdown",
+                    reply_markup=back_markup
+                )
+            
+            bot.answer_callback_query(call.id, f"Selected: {info['name']}")
     
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    c.execute("SELECT user_id FROM users WHERE is_admin = 1 OR is_owner = 1")
-    admins = c.fetchall()
-    
-    msg_text = "👑 **𝐀𝐃𝐌𝐈𝐍 𝐓𝐄𝐀𝐌** 👑\n\n"
-    markup = InlineKeyboardMarkup()
-    
-    for (admin_id,) in admins:
-        role = "👑 𝐎𝐖𝐍𝐄𝐑" if admin_id == OWNER_ID else "👥 𝐀𝐃𝐌𝐈𝐍"
-        msg_text += f"{role}: `{admin_id}`\n"
-        if admin_id != OWNER_ID:
-            markup.add(InlineKeyboardButton(f"📩 𝐌𝐞𝐬𝐬𝐚𝐠𝐞 {admin_id}", url=f"tg://user?id={admin_id}"))
-    
-    bot.reply_to(message, msg_text, parse_mode="Markdown", reply_markup=markup)
-
-# ==================== CREDIT MANAGEMENT COMMANDS ====================
-
-@bot.message_handler(commands=['setuserlimit'])
-def setuserlimit_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 3:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /setuserlimit [𝐮𝐬𝐞𝐫_𝐢𝐝] [𝐥𝐢𝐦𝐢𝐭]")
-        return
-    
-    try:
-        target = int(args[1])
-        limit = int(args[2])
-        set_user_credits(target, limit)
-        bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐥𝐢𝐦𝐢𝐭 𝐬𝐞𝐭 𝐭𝐨 {limit}!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
-
-@bot.message_handler(commands=['addcredits'])
-def addcredits_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 3:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /addcredits [𝐮𝐬𝐞𝐫_𝐢𝐝] [𝐚𝐦𝐨𝐮𝐧𝐭]")
-        return
-    
-    try:
-        target = int(args[1])
-        amount = int(args[2])
-        add_user_credits(target, amount)
-        bot.reply_to(message, f"✅ 𝐀𝐝𝐝𝐞𝐝 {amount} 𝐜𝐫𝐞𝐝𝐢𝐭𝐬 𝐭𝐨 𝐮𝐬𝐞𝐫 `{target}`!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
-
-@bot.message_handler(commands=['removecredits'])
-def removecredits_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 3:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /removecredits [𝐮𝐬𝐞𝐫_𝐢𝐝] [𝐚𝐦𝐨𝐮𝐧𝐭]")
-        return
-    
-    try:
-        target = int(args[1])
-        amount = int(args[2])
-        remove_user_credits(target, amount)
-        bot.reply_to(message, f"✅ 𝐑𝐞𝐦𝐨𝐯𝐞𝐝 {amount} 𝐜𝐫𝐞𝐝𝐢𝐭𝐬 𝐟𝐫𝐨𝐦 𝐮𝐬𝐞𝐫 `{target}`!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐢𝐧𝐩𝐮𝐭!")
-
-@bot.message_handler(commands=['resetcredits'])
-def resetcredits_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /resetcredits [𝐮𝐬𝐞𝐫_𝐢𝐝]")
-        return
-    
-    try:
-        target = int(args[1])
-        reset_user_credits(target)
-        bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐜𝐫𝐞𝐝𝐢𝐭𝐬 𝐫𝐞𝐬𝐞𝐭 𝐭𝐨 {FREE_CREDITS}!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐮𝐬𝐞𝐫 𝐈𝐃!")
-
-# ==================== BATCH MANAGEMENT COMMANDS ====================
-
-@bot.message_handler(commands=['givepremium'])
-def givepremium_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /givepremium [𝐮𝐬𝐞𝐫_𝐢𝐝]")
-        return
-    
-    try:
-        target = int(args[1])
-        set_user_batch(target, 'premium')
-        bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨𝐰 𝐏𝐑𝐄𝐌𝐈𝐔𝐌!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐮𝐬𝐞𝐫 𝐈𝐃!")
-
-@bot.message_handler(commands=['givestar'])
-def givestar_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /givestar [𝐮𝐬𝐞𝐫_𝐢𝐝]")
-        return
-    
-    try:
-        target = int(args[1])
-        set_user_batch(target, 'star')
-        bot.reply_to(message, f"✅ 𝐔𝐬𝐞𝐫 `{target}` 𝐢𝐬 𝐧𝐨𝐰 𝐒𝐓𝐀𝐑!", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐮𝐬𝐞𝐫 𝐈𝐃!")
-
-# ==================== LISTS COMMANDS ====================
-
-@bot.message_handler(commands=['memberlist'])
-def memberlist_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    c.execute("SELECT COUNT(*) FROM users")
-    total = c.fetchone()[0]
-    
-    c.execute("SELECT user_id, batch_type, is_banned FROM users ORDER BY joined_date DESC LIMIT 20")
-    members = c.fetchall()
-    
-    msg_text = f"📋 **𝐌𝐄𝐌𝐁𝐄𝐑 𝐋𝐈𝐒𝐓** (𝐋𝐚𝐬𝐭 20)\n𝐓𝐨𝐭𝐚𝐥: {total}\n\n"
-    for mid, batch, banned in members:
-        emoji = "👑" if mid == OWNER_ID else "🔥" if batch == 'admin' else "⭐" if batch == 'star' else "💎" if batch == 'premium' else "👤"
-        ban_emoji = "🔴" if banned else "🟢"
-        msg_text += f"{ban_emoji} {emoji} `{mid}` - {batch}\n"
-    
-    bot.reply_to(message, msg_text, parse_mode="Markdown")
-
-@bot.message_handler(commands=['premiumlist'])
-def premiumlist_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    c.execute("SELECT user_id FROM users WHERE batch_type IN ('premium', 'star', 'admin', 'owner')")
-    premium = c.fetchall()
-    
-    if not premium:
-        bot.reply_to(message, "📝 𝐍𝐨 𝐩𝐫𝐞𝐦𝐢𝐮𝐦 𝐦𝐞𝐦𝐛𝐞𝐫𝐬!")
-        return
-    
-    msg_text = "💎 **𝐏𝐑𝐄𝐌𝐈𝐔𝐌 𝐌𝐄𝐌𝐁𝐄𝐑𝐒** 💎\n\n"
-    for (pid,) in premium[:20]:
-        msg_text += f"• `{pid}`\n"
-    
-    bot.reply_to(message, msg_text, parse_mode="Markdown")
-
-@bot.message_handler(commands=['banlist'])
-def banlist_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    c.execute("SELECT user_id, ban_reason, ban_date FROM banned_users")
-    banned = c.fetchall()
-    
-    if not banned:
-        bot.reply_to(message, "📝 𝐍𝐨 𝐛𝐚𝐧𝐧𝐞𝐝 𝐮𝐬𝐞𝐫𝐬!")
-        return
-    
-    msg_text = "🔨 **𝐁𝐀𝐍𝐍𝐄𝐃 𝐔𝐒𝐄𝐑𝐒** 🔨\n\n"
-    for bid, reason, date in banned:
-        msg_text += f"• `{bid}` - {reason}\n  📅 {date[:10]}\n\n"
-    
-    bot.reply_to(message, msg_text, parse_mode="Markdown")
-
-# ==================== BOT SETTINGS COMMANDS ====================
-
-@bot.message_handler(commands=['boton'])
-def boton_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    update_setting('bot_active', 'true', user_id)
-    bot.reply_to(message, "🟢 **𝐁𝐨𝐭 𝐢𝐬 𝐧𝐨𝐰 𝐎𝐍!**", parse_mode="Markdown")
-
-@bot.message_handler(commands=['botoff'])
-def botoff_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    update_setting('bot_active', 'false', user_id)
-    bot.reply_to(message, "🔴 **𝐁𝐨𝐭 𝐢𝐬 𝐧𝐨𝐰 𝐎𝐅𝐅!**", parse_mode="Markdown")
-
-@bot.message_handler(commands=['maintenance'])
-def maintenance_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    current = get_setting('maintenance')
-    new_value = 'false' if current == 'true' else 'true'
-    update_setting('maintenance', new_value, user_id)
-    
-    status = "𝐎𝐍" if new_value == 'true' else "𝐎𝐅𝐅"
-    bot.reply_to(message, f"🛠️ **𝐌𝐚𝐢𝐧𝐭𝐞𝐧𝐚𝐧𝐜𝐞 𝐦𝐨𝐝𝐞 𝐢𝐬 𝐧𝐨𝐰 {status}!**", parse_mode="Markdown")
-
-@bot.message_handler(commands=['togglejoin'])
-def togglejoin_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    current = get_setting('join_check')
-    new_value = 'false' if current == 'true' else 'true'
-    update_setting('join_check', new_value, user_id)
-    
-    status = "𝐎𝐅𝐅" if new_value == 'false' else "𝐎𝐍"
-    bot.reply_to(message, f"🔒 **𝐉𝐨𝐢𝐧 𝐜𝐡𝐞𝐜𝐤 𝐢𝐬 𝐧𝐨𝐰 {status}!**", parse_mode="Markdown")
-
-@bot.message_handler(commands=['togglecredits'])
-def togglecredits_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    current = get_setting('credit_system')
-    new_value = 'false' if current == 'true' else 'true'
-    update_setting('credit_system', new_value, user_id)
-    
-    status = "𝐎𝐅𝐅" if new_value == 'false' else "𝐎𝐍"
-    bot.reply_to(message, f"💰 **𝐂𝐫𝐞𝐝𝐢𝐭 𝐬𝐲𝐬𝐭𝐞𝐦 𝐢𝐬 𝐧𝐨𝐰 {status}!**", parse_mode="Markdown")
-
-@bot.message_handler(commands=['settings'])
-def settings_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin_user(user_id):
-        bot.reply_to(message, "❌ 𝐀𝐝𝐦𝐢𝐧 𝐨𝐧𝐥𝐲!")
-        return
-    
-    bot_active = get_setting('bot_active')
-    maintenance = get_setting('maintenance')
-    join_check = get_setting('join_check')
-    credit_system = get_setting('credit_system')
-    
-    msg_text = f"""
-⚙️ **𝐁𝐎𝐓 𝐒𝐄𝐓𝐓𝐈𝐍𝐆𝐒**
-━━━━━━━━━━━━━━━━
-🟢 𝐁𝐨𝐭 𝐀𝐜𝐭𝐢𝐯𝐞: {'𝐘𝐄𝐒' if bot_active == 'true' else '𝐍𝐎'}
-🛠️ 𝐌𝐚𝐢𝐧𝐭𝐞𝐧𝐚𝐧𝐜𝐞: {'𝐘𝐄𝐒' if maintenance == 'true' else '𝐍𝐎'}
-🔒 𝐉𝐨𝐢𝐧 𝐂𝐡𝐞𝐜𝐤: {'𝐘𝐄𝐒' if join_check == 'true' else '𝐍𝐎'}
-💰 𝐂𝐫𝐞𝐝𝐢𝐭 𝐒𝐲𝐬𝐭𝐞𝐦: {'𝐘𝐄𝐒' if credit_system == 'true' else '𝐍𝐎'}
-
-👑 𝐎𝐰𝐧𝐞𝐫: {OWNER_ID}
-"""
-    bot.reply_to(message, msg_text, parse_mode="Markdown")
-
-# ==================== OWNER ONLY COMMANDS ====================
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast_command(message):
-    user_id = message.from_user.id
-    
-    if user_id != OWNER_ID:
-        bot.reply_to(message, "❌ 𝐎𝐧𝐥𝐲 𝐨𝐰𝐧𝐞𝐫 𝐜𝐚𝐧 𝐮𝐬𝐞 𝐭𝐡𝐢𝐬!")
-        return
-    
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        bot.reply_to(message, "𝐔𝐬𝐚𝐠𝐞: /broadcast [𝐦𝐞𝐬𝐬𝐚𝐠𝐞]")
-        return
-    
-    broadcast_msg = args[1]
-    c.execute("SELECT user_id FROM users WHERE is_banned = 0")
-    users = c.fetchall()
-    
-    sent = 0
-    for (uid,) in users:
+    # Handle back to main menu
+    elif data == "back_main":
+        if user_id in user_input_state:
+            del user_input_state[user_id]
+        
+        # Delete current message
         try:
-            bot.send_message(uid, f"📢 **𝐁𝐑𝐎𝐀𝐃𝐂𝐀𝐒𝐓**\n\n{broadcast_msg}\n\n{BRAND}", parse_mode="Markdown")
-            sent += 1
-            time.sleep(0.05)
+            bot.delete_message(chat_id, message_id)
         except:
-            continue
+            pass
+        
+        # Show main menu
+        first_name = call.from_user.first_name or "User"
+        show_main_menu(chat_id, first_name)
+        bot.answer_callback_query(call.id, "Main Menu")
     
-    bot.reply_to(message, f"✅ 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 𝐬𝐞𝐧𝐭 𝐭𝐨 {sent} 𝐮𝐬𝐞𝐫𝐬!")
-
-@bot.message_handler(commands=['stats'])
-def stats_command(message):
-    user_id = message.from_user.id
-    
-    if user_id != OWNER_ID:
-        bot.reply_to(message, "❌ 𝐎𝐧𝐥𝐲 𝐨𝐰𝐧𝐞𝐫 𝐜𝐚𝐧 𝐮𝐬𝐞 𝐭𝐡𝐢𝐬!")
-        return
-    
-    c.execute("SELECT COUNT(*) FROM users")
-    total_users = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
-    total_admins = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM banned_users")
-    total_banned = c.fetchone()[0]
-    
-    c.execute("SELECT SUM(credits_used) FROM users")
-    total_commands = c.fetchone()[0] or 0
-    
-    msg_text = f"""
-📊 **𝐁𝐎𝐓 𝐒𝐓𝐀𝐓𝐈𝐒𝐓𝐈𝐂𝐒**
-━━━━━━━━━━━━━━━━
-👥 𝐓𝐨𝐭𝐚𝐥 𝐔𝐬𝐞𝐫𝐬: {total_users}
-👑 𝐓𝐨𝐭𝐚𝐥 𝐀𝐝𝐦𝐢𝐧𝐬: {total_admins}
-🔴 𝐁𝐚𝐧𝐧𝐞𝐝 𝐔𝐬𝐞𝐫𝐬: {total_banned}
-📊 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬 𝐔𝐬𝐞𝐝: {total_commands}
+    # Handle help
+    elif data == "help":
+        help_text = f"""
+╔══════════════════════════════╗
+║ 📚 **HELP MENU** 📚 ║
+╠══════════════════════════════╣
+║ **{BOT_NAME}** ║
+╠══════════════════════════════╣
+║ **AVAILABLE COMMANDS:** ║
 """
-    bot.reply_to(message, msg_text, parse_mode="Markdown")
-
-# ==================== ERROR HANDLER ====================
-@bot.message_handler(func=lambda message: True)
-def handle_all(message):
-    bot.reply_to(message, f"❌ /help", parse_mode="Markdown")
+        for cmd, info in API_COMMANDS.items():
+            help_text += f"║ /{cmd} - {info['name']}\n"
+        
+        help_text += f"""
+╠══════════════════════════════╣
+║ **UTILITY:** ║
+║ /start - Main menu ║
+║ /profile - Your stats ║
+║ /referral - Get link ║
+║ /admins - Contact team ║
+╠══════════════════════════════╣
+║ 👑 **{BRAND}** ║
+╚══════════════════════════════╝
+"""
+        back_markup = InlineKeyboardMarkup()
+        back_markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_main"))
+        
+        try:
+            bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=help_text,
+                parse_mode="Markdown",
+                reply_markup=back_markup
+            )
+        except:
+            pass
+        
+        bot.answer_callback_query(call.id, "Help Menu")
+    
+    # Handle profile
+    elif data == "profile":
+        stats = get_user_stats(user_id)
+        
+        if stats:
+            verified, is_admin, is_owner, joined_date, total_commands, referrals, referred_by = stats
+            role = "👑 OWNER" if is_owner else "👥 ADMIN" if is_admin else "👤 USER"
+            
+            profile_text = f"""
+╔══════════════════════════════╗
+║ 📊 **USER PROFILE** 📊 ║
+╠══════════════════════════════╣
+║ **{BOT_NAME}** ║
+╠══════════════════════════════╣
+║ 👤 **ID:** `{user_id}` ║
+║ 🏷️ **Role:** {role} ║
+║ ✅ **Verified:** {'Yes' if verified else 'No'} ║
+║ 📊 **Commands:** {total_commands} ║
+║ 👥 **Referrals:** {referrals} ║
+║ 📅 **Joined:** {joined_date[:10]} ║
+╠══════════════════════════════╣
+║ 👑 **{BRAND}** ║
+╚══════════════════════════════╝
+"""
+            back_markup = InlineKeyboardMarkup()
+            back_markup.add(InlineKeyboardButton("🔙 Back", callback_data="back_main"))
+            
+            try:
+                bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=profile_text,
+                    parse_mode="Markdown",
+                    reply_markup=back_markup
+                )
+            except:
+                pass
+        
+        bot.answer_callback_query(call.id, "Your Profile")
+    
+    # Handle referral
+    elif data == "referral":
+        bot_username = bot.get_me().username
+        referral_link = f"https://t.me/{bot_username}?start=ref{user_id}"
+        
+        c.execute("SELECT referrals FROM users WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        referrals = result[0] if result else 0
+        
+        ref_text = f"""
+╔══════════════════════════════╗
+║ 👥 **REFERRAL SYSTEM** 👥 ║
+╠══════════════════════════════╣
+║ **{BOT_NAME}** ║
+╠══════════════════════════════╣
+║ **Your Referrals:** {referrals} ║
+╠══════════════════════════════╣
+║ **Your Link:** ║
+║ `{referral_link}` ║
+╠══════════════════════════════╣
+║ Share this link with friends! ║
+║ When they join, you'll get ║
+║ referral credit. ║
+╚══════════════════════════════╝
+"""
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("📤 Share", switch_inline_query=f"Join {BOT_NAME} Bot! {referral_link}"),
+            InlineKeyboardButton("🔙 Back", callback_data="back_main")
+        )
+        
+        try:
+            bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=ref_text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+        except:
+            pass
+        
+        bot.answer_callback_query(call.id, "Your Referral Link")
+    
+    # Handle admins
+    elif data == "admins":
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("👑 Contact Owner", url=f"tg://user?id={OWNER_ID}"),
+            InlineKeyboardButton("🔙 Back", callback_data="back_main")
+        )
+        
+        msg_text = f"""
+╔══════════════════════════════╗
+║ 👑 **CONTACT TEAM** 👑 ║
+╠══════════════════════════════╣
+║ **{BOT_NAME}** ║
+╠══════════════════════════════╣
+║ **Owner ID:** `{OWNER_ID}` ║
+╠══════════════════════════════╣
+║ Click below to message ║
+╚══════════════════════════════╝
+"""
+        try:
+            bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=msg_text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+        except:
+            pass
+        
+        bot.answer_callback_query(call.id, "Contact Team")
 
 # ==================== FLASK APP ====================
 app = Flask(__name__)
@@ -1348,7 +861,7 @@ app = Flask(__name__)
 def home():
     return jsonify({
         "status": "online",
-        "bot": "Tatsumaki",
+        "bot": BOT_NAME,
         "brand": BRAND,
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
@@ -1359,11 +872,14 @@ def run_flask():
 
 # ==================== START BOT ====================
 def run_bot():
-    print("🚀 Tatsumaki Bot Starting...")
-    print(f"👑 {BRAND}")
+    print("🚀 Bot Starting...")
+    print(f"🤖 Bot Name: {BOT_NAME}")
+    print(f"👑 Brand: {BRAND}")
     print(f"👑 Owner ID: {OWNER_ID}")
-    print(f"⏱️ API Timeout: {API_TIMEOUT}s")
-    print("📦 RAW Data Mode: ON")
+    print(f"🌐 API URL: {API_BASE_URL}")
+    print(f"📊 API Commands: {len(API_COMMANDS)}")
+    print(f"⏱️ API Timeout: {API_TIMEOUT} seconds")
+    print("📢 Bot will ONLY respond in private chat")
     print("=" * 30)
     
     try:
@@ -1372,9 +888,11 @@ def run_bot():
     except:
         pass
     
+    print("✅ Bot is running!")
+    
     while True:
         try:
-            bot.infinity_polling(timeout=30)
+            bot.infinity_polling(timeout=30, skip_pending=True)
         except Exception as e:
             print(f"❌ Error: {e}")
             time.sleep(2)
